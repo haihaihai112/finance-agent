@@ -56,7 +56,7 @@ OCR 使用 RapidOCR ONNX：原生 PDF 优先取文字层，图片和扫描页实
 
 [架构](docs/architecture.md) · [项目简介与面试亮点](docs/project-highlights.md) · [工作台使用](docs/workbench-guide.md) · [验收记录](docs/verification.md)
 
-MySQL真实服务和 DeepSeek 真实密钥调用须在相应环境验证。当前不声称生产级金融准确性、OCR准确率、吞吐量或业务收益；真实／模拟模式与来源随结果保留。GitHub账号已记录，当前没有创建、推送或发布仓库。
+MySQL真实服务和 DeepSeek 真实密钥调用须在相应环境验证。当前不声称生产级金融准确性、OCR准确率、吞吐量或业务收益；真实／模拟模式与来源随结果保留。已建立本地 Git 仓库，当前分支为 `review-revisions`，密钥与运行数据不纳入版本控制。未创建、推送或发布 GitHub 仓库。
 
 如需复现本次干净Windows/Python3.13依赖，可安装 `requirements-lock-windows-py313.txt` 后再 `pip install -e . --no-deps`。该锁文件不用于其他Python版本或系统；通用安装仍以pyproject.toml为准。
 
