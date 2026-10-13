@@ -40,7 +40,7 @@ Playwright驱动真实Edge，项目虚拟环境、无DeepSeek密钥、stdio MCP�
 
 ## 审阅修订验收
 
-2026-10-13：独立、无 system-site-packages 的 Python 3.13.9 环境最终完整回归 **163 passed，4 skipped，25.33 秒**，无测试警告。四项跳过是专用真实 MySQL 验收，缺 MYSQL_TEST_URL，不能视为通过。
+2026-10-13：独立、无 system-site-packages 的 Python 3.13.9 环境最终完整回归 **163 passed，4 skipped，26.51 秒**，无测试警告。四项跳过是专用真实 MySQL 验收，缺 MYSQL_TEST_URL，不能视为通过。
 
 新增验证覆盖请求登记与运行创建/恢复、最终状态与响应、复制申请写入的事务回滚；请求状态/运行关联/用户隔离；超过5分钟无更新的请求显式关闭、撤销授权和迟到结果拒绝；贷款复制字段/材料/证据、确认和授权重置、父运行关联及旧结果不变。模型与直接API拒绝空白/超长身份业务字段；不定义新增银行就业规则。
 
@@ -55,4 +55,6 @@ Playwright驱动真实Edge，项目虚拟环境、无DeepSeek密钥、stdio MCP�
 本地Git及scripts/verify.ps1使代码验收可重复；scripts/package_source.py只打包源代码和交付说明，排除密钥、运行数据、虚拟环境、Git元数据和中间验收材料。
 
 
-最终执行scripts/verify.ps1（隔离Python）：163 passed、4 skipped；Ruff check通过；format --check报告76 files already formatted；compileall通过。新增DeepSeek验收脚本的模型匹配/缺失/不一致、无Key及异常usage等测试均为合成transport，不构成真实调用证据。正式浏览器全场景通过，服务已停止。源码包和本地Git整理结果见最终交付。
+最终执行scripts/verify.ps1（隔离Python）：163 passed、4 skipped（26.51秒）；Ruff check通过；format --check报告76 files already formatted；compileall通过。新增DeepSeek验收脚本的模型匹配/缺失/不一致、无Key及异常usage等测试均为合成transport，不构成真实调用证据。正式浏览器全场景通过，服务已停止。源码包和本地Git整理结果见最终交付。
+
+最终独立审阅通过；验收脚本对异常usage单独分类并保留已验证内容和模型事实，相关合成测试及提交后完整回归通过。本地分支review-revisions保留，未发布远程。
