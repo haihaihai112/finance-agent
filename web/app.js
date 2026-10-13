@@ -179,6 +179,7 @@
   }
   function clearSession() {
     pendingRequest=null;requestProcessing=false;requestStale=false;historyOffset=0;historyCount=0;
+    $("history-page").textContent="第 1 页";
     sessionStorage.removeItem(REQUEST_KEY);$("pending-request-id").textContent="";$("request-id-input").value="";$("request-status").textContent="";
     $("history-list").replaceChildren(node("li","点击刷新读取本用户历史","empty"));$("event-list").replaceChildren();
     state.session=null;state.documents=[];state.extractions.clear();clearRun();
@@ -492,6 +493,8 @@
     $("history-page").textContent=`第 ${historyOffset/HISTORY_LIMIT+1} 页`;
   }
   async function locateRequest() {
+    $("request-status").textContent="正在定位请求…";
+    try {
     const id=$("request-id-input").value.trim();if(!id)throw new Error("请输入请求 ID。");
     requestProcessing=false;requestStale=false;
     const request=await api(`/api/v1/requests/${encodeURIComponent(id)}`);
@@ -504,6 +507,10 @@
       await refreshRun(request.run_id);
       if(pendingRequest?.request_id===id)savePending(null);
       notice("已定位请求并读取运行；请按运行的业务状态继续。");
+    }
+    } catch(error) {
+      $("request-status").textContent="查询失败，请核对请求 ID 和会话，或显式刷新重查；待恢复请求仍保留。";
+      throw error;
     }
   }
   async function loadEvents() {

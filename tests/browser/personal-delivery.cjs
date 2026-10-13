@@ -16,6 +16,7 @@ async function settled(page){await page.waitForFunction(()=>!document.getElement
  assert.equal(posts,1);assert.equal(await page.locator("#pending-request-id").textContent(),requestId);
  const pending=await page.evaluate(()=>JSON.parse(sessionStorage.getItem("finance-workbench-request-v1")));assert.deepEqual(Object.keys(pending).sort(),["operation","request_id","session_id"]);
  await page.reload();await settled(page);assert.equal(posts,1);
+ await page.route(`**/api/v1/requests/${requestId}`,r=>r.abort("failed"));await page.locator("#locate-request").click();await settled(page);assert.match(await page.locator("#request-status").textContent(),/查询失败.*核对/);assert.equal(await page.locator("#pending-request-id").textContent(),requestId);assert.equal(posts,1);await page.unroute(`**/api/v1/requests/${requestId}`);
  await page.locator("#locate-request").click();await settled(page);
  assert.match(await page.locator("#request-status").textContent(),/请求已完成/);
  const id=await page.locator("#run-id").textContent();assert.notEqual(id,"尚未发起");
@@ -27,7 +28,7 @@ async function settled(page){await page.waitForFunction(()=>!document.getElement
  await page.locator("#restore-run-id").evaluate(e=>e.closest("details").open=true);await page.locator("#restore-run-id").fill(fixture.run_id);await page.locator("#restore-run").click();await settled(page);
  await page.route("**/api/v1/runs/delivery-fixture/export?format=*",r=>{assert.ok(r.request().headers().authorization);assert.ok(!r.request().url().includes("token"));return r.fulfill({contentType:"application/json",headers:{"Content-Disposition":"attachment; filename=report.json"},body:JSON.stringify({result:fixture.result})});});
  const downloadPromise=page.waitForEvent("download");await page.locator("#export-json").click();const download=await downloadPromise;assert.ok((await fs.readFile(await download.path(),"utf8")).includes("9007199254740993.01"));await settled(page);
- await page.locator("#request-id-input").fill("unknown-request");await page.locator("#locate-request").click();await settled(page);assert.match(await page.locator("#notice").textContent(),/404/);
+ await page.locator("#request-id-input").fill("unknown-request");await page.locator("#locate-request").click();await settled(page);assert.match(await page.locator("#notice").textContent(),/404/);assert.match(await page.locator("#request-status").textContent(),/查询失败.*核对/);assert.ok(!(await page.locator("#request-status").textContent()).includes("请求已完成"));
  await page.route("**/api/v1/requests/unknown-request",r=>r.fulfill({json:{request_id:"unknown-request",status:"processing",updated_at:"2000-01-01T00:00:00Z"}}));
  await page.locator("#locate-request").click();await settled(page);
  await page.route("**/api/v1/requests/unknown-request/interrupt",r=>r.fulfill({status:409,json:{detail:"请求状态已变化，请重新查询"}}));
@@ -40,7 +41,8 @@ async function settled(page){await page.waitForFunction(()=>!document.getElement
  await page.route("**/api/v1/documents/broken-document",r=>r.fulfill({status:503,json:{detail:"controlled attachment failure"}}));
  await page.locator("#history-refresh").click();await settled(page);await page.locator("#history-list button").first().click();await settled(page);assert.equal(await page.locator("#run-id").textContent(),fixture.run_id);
  await page.locator("#history-next").click();await settled(page);assert.equal(await page.locator("#history-page").textContent(),"第 2 页");await page.locator("#history-prev").click();await settled(page);
- await page.locator("#create-session").click();await settled(page);assert.equal(await page.evaluate(()=>sessionStorage.getItem("finance-workbench-request-v1")),null);assert.equal(await page.locator("#request-id-input").inputValue(),"");
+ await page.locator("#history-next").click();await settled(page);assert.equal(await page.locator("#history-page").textContent(),"第 2 页");
+ await page.locator("#create-session").click();await settled(page);assert.equal(await page.evaluate(()=>sessionStorage.getItem("finance-workbench-request-v1")),null);assert.equal(await page.locator("#request-id-input").inputValue(),"");assert.equal(await page.locator("#history-page").textContent(),"第 1 页");
  console.log(`PASS delivery Edge ${width}px: lost response, reload, read-only recovery, history, events, authenticated exact download, unknown request, interrupt conflict`);await context.close();
  }
  const context=await browser.newContext();const page=await context.newPage();const errors=[];page.on("pageerror",e=>errors.push(e.message));await page.goto(base);await page.locator("#create-session").click();await settled(page);
