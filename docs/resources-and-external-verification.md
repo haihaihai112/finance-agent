@@ -41,7 +41,7 @@
 .venv/Scripts/python.exe -m pytest tests/test_mysql_integration.py -q
 ```
 
-四项入口覆盖：贷款 HTTP API 的创建、材料提取、字段确认、授权、实际 stdio MCP 子进程评估及跨用户隔离；独立 claims stdio 读取共享 DB；两个线程在同版本竞争 CAS（一个提交、一个冲突）；采集在第二次水位写入前故障注入，验证记录、修订、水位及成功日志整批回滚，失败日志独立保留。贷款评估、保单仍明确为 mock，MySQL 协议和事务验收不改变金融规则标签。
+四项入口覆盖：贷款 HTTP API 的创建、材料提取、字段确认、授权、实际 stdio MCP 子进程评估及跨用户隔离；独立 claims stdio 读取共享 DB，并单独检查客户端预检拒绝伪造身份（这不是 stdio 服务端拒绝的证明）；两个线程在同版本竞争 CAS（一个提交、一个冲突）；采集在第二次水位写入前故障注入，验证记录、修订、水位及成功日志整批回滚，失败日志独立保留。贷款评估、保单仍明确为 mock，MySQL 协议和事务验收不改变金融规则标签。
 
 测试创建合成会话、演示保单和独立来源行情记录，保留记录，不执行删库、删表或清理业务数据。测试 URL 的专用性由配置者保证。2026-10-13 没有配置该 URL，4 项真实验收均 skipped；未获得真实 MySQL 的通过证据。本地 SQLite 对同一验收主体的 4 项自检仅验证脚本流程与断言，不计入 MySQL 验收结果。
 
@@ -55,6 +55,6 @@
 
 `controlled_fallbacks.timeout` 与 `network_error` 使用合成 transport 验证实际 DeepSeekClient + IntentRouterAgent 的规则降级，分别标为 controlled_test。它们不证明真实网络、模型支持或可用性。
 
-缺少密钥时 `live_status=unverified_missing_key`、`live_requests=[]`、`model_available=null`。配置的模型名称不能视为实际支持证据；只有实际请求获得有效结构化响应才记为可用。实际 HTTP、超时、网络及结构化响应错误分别记录，不透露错误正文。没有经过核验的单价时 `cost=null`，不根据 token 数猜测费用。本次密钥不存在，实际模型、耗时、usage 和费用均未验证。
+缺少密钥时 `live_status=unverified_missing_key`、`live_requests=[]`、`model_available=null`。配置的模型名称不能视为实际支持证据；只有实际请求获得有效结构化响应且返回模型名称与配置完全匹配时，才记 `status=verified_configured_model` 和模型可用。端点结构化响应有效单独记为 `endpoint_structured_response_valid=true`；模型名称缺失或不匹配时分别记 `structured_response_model_missing` / `structured_response_model_mismatch`，配置模型可用性保持未知，实际调用验收退出码为1。实际 HTTP、超时、网络及结构化响应错误分别记录，不透露错误正文。没有经过核验的单价时 `cost=null`，不根据 token 数猜测费用。本次密钥不存在，实际模型、耗时、usage 和费用均未验证。
 
 依赖警告：当前 FastAPI/Starlette TestClient 的 httpx 兼容弃用警告和 PyMuPDF 的 fitz 名称弃用警告均来自已安装依赖；不将警告称为业务测试失败。

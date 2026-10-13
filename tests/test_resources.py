@@ -16,6 +16,7 @@ def test_keyed_locks_exclusion_independence_and_cleanup():
     async def exercise():
         locks = KeyedLocks()
         active = peak = 0
+
         async def worker(key):
             nonlocal active, peak
             async with locks.hold(key):
@@ -23,6 +24,7 @@ def test_keyed_locks_exclusion_independence_and_cleanup():
                 peak = max(peak, active)
                 await asyncio.sleep(0.01)
                 active -= 1
+
         await asyncio.gather(*(worker("same") for _ in range(10)))
         assert peak == 1
         assert len(locks) == 0
@@ -40,9 +42,11 @@ def test_keyed_locks_cancelled_waiter_and_holder_cleanup():
     async def exercise():
         locks = KeyedLocks()
         async with locks.hold("same"):
+
             async def wait():
                 async with locks.hold("same"):
                     pytest.fail("cancelled waiter must not enter")
+
             waiter = asyncio.create_task(wait())
             await asyncio.sleep(0)
             waiter.cancel()
@@ -51,10 +55,12 @@ def test_keyed_locks_cancelled_waiter_and_holder_cleanup():
             assert len(locks) == 1
         assert len(locks) == 0
         entered = asyncio.Event()
+
         async def hold():
             async with locks.hold("holder"):
                 entered.set()
                 await asyncio.Event().wait()
+
         holder = asyncio.create_task(hold())
         await entered.wait()
         holder.cancel()
@@ -83,7 +89,9 @@ class ObservedOCR:
                 await self.release.wait()
             else:
                 await asyncio.sleep(0.02)
-            return DocumentExtraction(document_id=document_id, text="synthetic", fields=[], warnings=[])
+            return DocumentExtraction(
+                document_id=document_id, text="synthetic", fields=[], warnings=[]
+            )
         finally:
             self.active -= 1
 
@@ -94,16 +102,22 @@ def documents(tmp_path, count):
     with fitz.open() as pdf:
         pdf.new_page().insert_text((30, 50), "monthly_income: 8000 CNY")
         content = pdf.tobytes()
-    ids = [store.save("owner", f"{i}.pdf", content, "application/pdf")["document_id"] for i in range(count)]
+    ids = [
+        store.save("owner", f"{i}.pdf", content, "application/pdf")["document_id"]
+        for i in range(count)
+    ]
     return engine, store, ids
 
 
 def test_ocr_bounded_deduplicated_and_user_scoped(tmp_path):
     engine, store, ids = documents(tmp_path, 5)
+
     async def exercise():
         ocr = ObservedOCR()
         service = DocumentService(store, ocr, max_concurrency=2)
-        results = await asyncio.gather(*(service.extract("owner", doc) for doc in ids for _ in range(3)))
+        results = await asyncio.gather(
+            *(service.extract("owner", doc) for doc in ids for _ in range(3))
+        )
         assert ocr.peak <= 2
         assert ocr.calls == len(ids)
         assert len(results) == 15
@@ -114,6 +128,7 @@ def test_ocr_bounded_deduplicated_and_user_scoped(tmp_path):
         await service.extract("owner", ids[0])
         assert ocr.calls == len(ids)
         assert not service._inflight
+
     try:
         asyncio.run(exercise())
     finally:
@@ -125,9 +140,11 @@ def test_cache_and_file_operations_run_off_event_loop(tmp_path):
     loop_thread = threading.get_ident()
     for name in ("get_info", "get_extraction", "read", "save_extraction"):
         original = getattr(store, name)
+
         def observed(*args, original=original, **kwargs):
             assert threading.get_ident() != loop_thread
             return original(*args, **kwargs)
+
         setattr(store, name, observed)
     try:
         asyncio.run(DocumentService(store, ObservedOCR()).extract("owner", ids[0]))
@@ -137,6 +154,7 @@ def test_cache_and_file_operations_run_off_event_loop(tmp_path):
 
 def test_cancellation_does_not_release_running_ocr_slot(tmp_path):
     engine, store, ids = documents(tmp_path, 2)
+
     async def exercise():
         ocr = ObservedOCR()
         ocr.release = asyncio.Event()
@@ -153,6 +171,7 @@ def test_cancellation_does_not_release_running_ocr_slot(tmp_path):
         await second
         assert ocr.peak == 1
         assert not service._inflight
+
     try:
         asyncio.run(exercise())
     finally:

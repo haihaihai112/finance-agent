@@ -48,7 +48,9 @@ def fixture(mode):
 
 async def measure(args, scratch):
     # Explicitly cap the executor used by this finite measurement too.
-    asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=max(4, args.limit)))
+    asyncio.get_running_loop().set_default_executor(
+        ThreadPoolExecutor(max_workers=max(4, args.limit))
+    )
     content, media_type, suffix = fixture(args.mode)
     engine = create_database_engine(f"sqlite:///{(scratch / 'measurement.db').as_posix()}")
     store = DocumentStore(engine, scratch / "files")
@@ -59,25 +61,47 @@ async def measure(args, scratch):
         await ocr.extract("synthetic-warmup", content, media_type)
         warmup = time.perf_counter() - start
         ocr.calls = ocr.peak = 0
-        ids = [store.save("synthetic-owner", f"{i}{suffix}", content, media_type)["document_id"] for i in range(args.documents)]
+        ids = [
+            store.save("synthetic-owner", f"{i}{suffix}", content, media_type)["document_id"]
+            for i in range(args.documents)
+        ]
         service = DocumentService(store, ocr, max_concurrency=args.limit)
         start = time.perf_counter()
-        results = await asyncio.gather(*(service.extract("synthetic-owner", doc) for doc in ids for _ in range(args.duplicates)))
+        results = await asyncio.gather(
+            *(
+                service.extract("synthetic-owner", doc)
+                for doc in ids
+                for _ in range(args.duplicates)
+            )
+        )
         elapsed = time.perf_counter() - start
         start = time.perf_counter()
         await asyncio.gather(*(service.extract("synthetic-owner", doc) for doc in ids))
         cached = time.perf_counter() - start
         assert ocr.peak <= args.limit and ocr.calls == args.documents
         assert not service._inflight
-        assert all(any(f.name == "monthly_income" and not f.confirmed for f in r.fields) for r in results)
-        return {"workload": "synthetic_fixture_actual_document_service", "mode": args.mode,
+        assert all(
+            any(f.name == "monthly_income" and not f.confirmed for f in r.fields) for r in results
+        )
+        return {
+            "workload": "synthetic_fixture_actual_document_service",
+            "mode": args.mode,
             "engine": "RapidOCR ONNX" if args.mode == "image" else "PyMuPDF native text parser",
-            "python": platform.python_version(), "system": platform.system(),
-            "documents": args.documents, "requests": len(results), "duplicates_per_document": args.duplicates,
-            "configured_limit": args.limit, "actual_worker_peak": ocr.peak, "actual_extraction_calls": ocr.calls,
-            "warmup_seconds": round(warmup, 4), "cold_batch_seconds": round(elapsed, 4),
-            "cached_batch_seconds": round(cached, 4), "request_rate_per_second": round(len(results) / elapsed, 2),
-            "verified_bounds_and_dedup": True, "production_benchmark": False}
+            "python": platform.python_version(),
+            "system": platform.system(),
+            "documents": args.documents,
+            "requests": len(results),
+            "duplicates_per_document": args.duplicates,
+            "configured_limit": args.limit,
+            "actual_worker_peak": ocr.peak,
+            "actual_extraction_calls": ocr.calls,
+            "warmup_seconds": round(warmup, 4),
+            "cold_batch_seconds": round(elapsed, 4),
+            "cached_batch_seconds": round(cached, 4),
+            "request_rate_per_second": round(len(results) / elapsed, 2),
+            "verified_bounds_and_dedup": True,
+            "production_benchmark": False,
+        }
     finally:
         engine.dispose()
 

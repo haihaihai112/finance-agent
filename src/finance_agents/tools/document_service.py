@@ -7,7 +7,11 @@ from finance_agents.tools.ocr import DocumentOCR
 
 class DocumentService:
     def __init__(self, store, ocr=None, max_concurrency=2):
-        if isinstance(max_concurrency, bool) or not isinstance(max_concurrency, int) or max_concurrency < 1:
+        if (
+            isinstance(max_concurrency, bool)
+            or not isinstance(max_concurrency, int)
+            or max_concurrency < 1
+        ):
             raise ValueError("max_concurrency must be a positive integer")
         self.store = store
         self.ocr = ocr or DocumentOCR()
