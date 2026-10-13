@@ -433,8 +433,9 @@
   async function refreshRun(id=state.run?.run_id) {
     if(!id) throw new Error("请输入运行 ID。");
     const response=await api(`/api/v1/runs/${encodeURIComponent(id)}`);
-    if(state.run?.run_id!==id) state.consentRef=null;
-    applyRun(response,{chat:false});await restoreRunDocuments(response);
+    // Fetch all target references before switching the run. A failed restoration
+    // must leave the current run and its attachments together.
+    await restoreRunDocuments(response);applyRun(response,{chat:false});
     notice("已读取最新运行版本和资料；请核对后继续。");
   }
   async function resume({message,confirmedFields={}}) {
@@ -528,8 +529,9 @@
   $("copy-loan").addEventListener("click",()=>action(async()=>{
     if(!canCopyLoan())throw new Error("仅已结束的贷款运行可复制为新申请。");
     const response=await api(`/api/v1/runs/${encodeURIComponent(state.run.run_id)}/copy`,{method:"POST",body:{request_id:crypto.randomUUID()}});
-    state.consentRef=null;state.controls.clear();
-    selectEntryMode("loan");applyRun(response);await restoreRunDocuments(response);
+    try {await restoreRunDocuments(response);}
+    catch(error) {throw new Error(`新申请 ${response.run_id} 已创建，但资料恢复失败。当前仍显示原运行；请按新申请 ID 重新读取。\n${error.message}`);}
+    selectEntryMode("loan");applyRun(response);
     notice("已复制为新申请，原运行和结果保留为历史记录。请重新逐项核对字段，并另行授权本次模拟评估。");
   }));
   $("read-parent-run").addEventListener("click",()=>action(()=>refreshRun(state.run?.parent_run_id)));

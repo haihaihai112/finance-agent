@@ -49,6 +49,48 @@ async function fixtureCases(browser) {
   }
   await context.close();
 }
+async function restoreFailureFixtures(browser) {
+  // Controlled network failures: no claim that these are live OCR failures.
+  for (const failPart of ["extraction", "metadata"]) {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    const runs = {
+      "fixture-A": {run_id:"fixture-A", intent:"loan", status:"waiting_user", state_version:1, form:{}, document_ids:["doc-A"]},
+      "fixture-B": {run_id:"fixture-B", intent:"loan", status:"waiting_user", state_version:1, form:{}, document_ids:["doc-B"]},
+    };
+    const resumes = [];
+    await page.route("**/api/v1/runs/fixture-*", route => route.fulfill({json:runs[route.request().url().split("/").at(-1)]}));
+    await page.route("**/api/v1/documents/doc-*", route => {
+      const id = route.request().url().split("/").at(-1);
+      return route.fulfill(id === "doc-B" && failPart === "metadata" ? {status:503,json:{detail:"controlled metadata failure"}} : {json:{document_id:id,filename:id + ".pdf"}});
+    });
+    await page.route("**/api/v1/documents/doc-*/extraction", route => {
+      const id = route.request().url().split("/").at(-2);
+      return route.fulfill(id === "doc-B" && failPart === "extraction" ? {status:503,json:{detail:"controlled extraction failure"}} : {json:{text:"evidence for " + id,fields:[]}});
+    });
+    await page.route("**/api/v1/runs/fixture-*/resume", route => {
+      const id = route.request().url().split("/").at(-2);
+      resumes.push({id, body:route.request().postDataJSON()});
+      return route.fulfill({json:runs[id]});
+    });
+    await page.goto(baseURL);
+    await page.locator("#create-session").click(); await settled(page);
+    await restore(page, "fixture-A");
+    assert.match(await page.locator("#document-list").textContent(), /doc-A/);
+    await page.locator("#restore-run-id").fill("fixture-B");
+    await page.locator("#restore-run").click(); await settled(page);
+    assert.match(await page.locator("#notice").textContent(), /controlled .* failure/);
+    await page.locator("#message").fill("恢复失败后的补答");
+    await page.locator("#send-query").click(); await settled(page);
+    // Atomic recovery may retain A; it must never submit A's attachment to B.
+    assert.deepEqual(resumes.map(item => [item.id, item.body.attachment_ids]), [["fixture-A", ["doc-A"]]]);
+    assert.equal(await page.locator("#run-id").textContent(), "fixture-A");
+    assert.match(await page.locator("#document-list").textContent(), /doc-A/);
+    assert.doesNotMatch(await page.locator("#document-list").textContent(), /doc-B/);
+    console.log("PASS controlled atomic restoration failure fixture:", failPart);
+    await context.close();
+  }
+}
 async function realLoan(browser) {
   const context = await browser.newContext();
   const page = await context.newPage();
@@ -137,6 +179,7 @@ async function realLoan(browser) {
   const browser = await chromium.launch({channel:process.env.PLAYWRIGHT_CHANNEL || "msedge", headless:process.env.BROWSER_HEADLESS !== "false"});
   try {
     if (["all", "fixtures"].includes(only)) await fixtureCases(browser);
+    if (["all", "restore"].includes(only)) await restoreFailureFixtures(browser);
     if (["all", "loan"].includes(only)) await realLoan(browser);
   } finally { await browser.close(); }
 })().catch(error => {console.error(error); process.exitCode=1;});
