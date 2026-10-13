@@ -10,8 +10,12 @@ from finance_agents.contracts.common import Contract, Money
 
 
 # Syntax limits only: employment status remains free text, not a banking rule.
-IdentifierText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128)]
-BusinessText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=256)]
+IdentifierText = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128)
+]
+BusinessText = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=256)
+]
 
 
 class InvestmentProfile(Contract):
