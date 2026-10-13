@@ -59,6 +59,7 @@
   const STATUS_LABELS = {waiting_user:"等待补充",waiting:"等待补充",needs_input:"等待补充",completed:"已完成",success:"已完成",partial:"部分结果",failed:"失败",cancelled:"已取消",unavailable:"不可用",running:"运行中",received:"已接收",routed:"已路由",validating:"校验中",formatting:"整理结果中"};
   const state = {session:null,run:null,intent:null,entryMode:"auto",documents:[],extractions:new Map(),consentRef:null,busy:false,conflict:false,controls:new Map()};
   const canResume = () => Boolean(state.run && ["waiting_user","waiting","needs_input"].includes(state.run.status));
+  const canCopyLoan = () => state.intent==="loan" && ["completed","partial","failed","cancelled"].includes(state.run?.status);
   const textValue = (value) => value == null ? "—" : typeof value === "string" ? value : JSON.stringify(value,null,2);
   const fieldName = (name) => String(name).split(".").at(-1);
   const labelFor = (name) => LABELS[fieldName(name)] || ({document_refs:"上传材料",confirmed_fields:"字段确认",consent_ref:"征信授权"}[fieldName(name)]) || String(name);
@@ -85,6 +86,10 @@
     const active=Boolean(state.session?.token);
     ["upload-button","create-demo","send-query","restore-run"].forEach((id) => {$(id).disabled=state.busy || !active;});
     $("refresh-run").disabled=state.busy || !active || !state.run;
+    $("copy-loan").hidden=!canCopyLoan();
+    $("copy-loan").disabled=state.busy || !active || !canCopyLoan();
+    $("read-parent-run").hidden=!state.run?.parent_run_id;
+    $("read-parent-run").disabled=state.busy || !active;
     $("confirm-resume").disabled=state.busy || !active || !canResume() || state.conflict;
     $("grant-consent").disabled=state.busy || !active || !canResume() || Boolean(state.consentRef) || state.conflict;
     $("revoke-consent").disabled=state.busy || !state.consentRef;
@@ -156,7 +161,8 @@
     ["form-panel","result-panel","consent-panel"].forEach((id)=>{$(id).hidden=true;});
     $("run-id").textContent="尚未发起";
     $("run-intent").textContent="待识别";
-    ["run-version","run-status","wait-reason"].forEach((id)=>{$(id).textContent="—";});
+    ["run-version","run-status","wait-reason","run-parent-id"].forEach((id)=>{$(id).textContent="—";});
+    $("run-lineage").hidden=true;
     persist();syncControls();
   }
   function clearSession() {
@@ -192,6 +198,15 @@
     const extraction=await api(`/api/v1/documents/${encodeURIComponent(id)}/extract`,{method:"POST"});
     state.extractions.set(id,extraction);renderExtractions();
     return extraction;
+  }
+  async function restoreRunDocuments(response) {
+    const ids=response.document_ids || [];
+    // Restore server-owned references after refresh. File content never goes into sessionStorage.
+    const documents=await Promise.all(ids.map(id=>api(`/api/v1/documents/${encodeURIComponent(id)}`)));
+    const extractions=await Promise.all(ids.map(id=>api(`/api/v1/documents/${encodeURIComponent(id)}/extraction`)));
+    state.documents=documents.map(doc=>({...doc,selected:true}));
+    state.extractions=new Map(ids.map((id,index)=>[id,extractions[index]]));
+    renderDocuments();renderExtractions();
   }
   function renderExtractions() {
     $("extraction-panel").hidden=!state.extractions.size;
@@ -248,6 +263,7 @@
       input.type=type==="date" ? "date" : "text";
       if(type==="money" || type==="integer") input.inputMode=type==="money" ? "decimal" : "numeric";
       input.autocomplete="off";
+      if(type==="text") input.maxLength=["insurer","insurance_type","incident_type"].includes(name) ? 256 : 128;
     }
     input.value=inputString(value,type);input.setAttribute("aria-describedby",`${id}-help`);
     wrapper.append(input);
@@ -369,7 +385,7 @@
       }
     } else if(state.intent==="claim" && structured.clause_check) {
       const check=structured.clause_check,grid=node("div",undefined,"summary-grid");
-      const verdict={potentially_covered:"可能符合条款，需机构审核",not_covered:"初步不符合条款",manual_review:"需人工审核"}[check.preliminary_result] || check.preliminary_result || "未提供";
+      const verdict={potentially_covered:"可能符合条款，需机构审核",outside_coverage_dates:"出险日期不在保障期内",excluded_by_provided_clause:"所提供条款包含除外情形",requires_manual_clause_review:"条款需人工审核"}[check.preliminary_result] || check.preliminary_result || "未提供";
       grid.append(metricCard("条款初筛",verdict),metricCard("出险日期",check.incident_date || "—"),metricCard("是否在保单有效期内",check.within_effective_dates===true ? "是" : check.within_effective_dates===false ? "否" : "未提供"));target.append(grid);shown=true;
     }
     if(!shown) target.append(node("p",Object.keys(facts || {}).length ? "本次未提供可展示的摘要计算字段，可展开原始事实核验。" : "本次无结构化计算结果。","help"));
@@ -407,6 +423,8 @@
     $("run-version").textContent=String(response.state_version);
     $("run-status").textContent=STATUS_LABELS[response.status] || response.status;
     $("wait-reason").textContent=WAIT_LABELS[response.wait_reason] || response.wait_reason || "—";
+    $("run-parent-id").textContent=response.parent_run_id || "—";
+    $("run-lineage").hidden=!response.parent_run_id;
     renderForm(response);renderResult(response.result);
     $("run-intent").textContent=TITLES[state.intent] || "待澄清";
     if(chat && (response.question || response.result?.conclusion)) appendChat("assistant",response.question || response.result.conclusion);
@@ -416,7 +434,8 @@
     if(!id) throw new Error("请输入运行 ID。");
     const response=await api(`/api/v1/runs/${encodeURIComponent(id)}`);
     if(state.run?.run_id!==id) state.consentRef=null;
-    applyRun(response,{chat:false});notice("已读取最新运行版本；请核对后继续。");
+    applyRun(response,{chat:false});await restoreRunDocuments(response);
+    notice("已读取最新运行版本和资料；请核对后继续。");
   }
   async function resume({message,confirmedFields={}}) {
     if(!state.run)throw new Error("请先发起业务。");
@@ -506,6 +525,14 @@
     notice("已撤销授权。已有结果保留为历史记录；后续模拟评估需要重新授权。");
   }));
   $("refresh-run").addEventListener("click",()=>action(()=>refreshRun()));
+  $("copy-loan").addEventListener("click",()=>action(async()=>{
+    if(!canCopyLoan())throw new Error("仅已结束的贷款运行可复制为新申请。");
+    const response=await api(`/api/v1/runs/${encodeURIComponent(state.run.run_id)}/copy`,{method:"POST",body:{request_id:crypto.randomUUID()}});
+    state.consentRef=null;state.controls.clear();
+    selectEntryMode("loan");applyRun(response);await restoreRunDocuments(response);
+    notice("已复制为新申请，原运行和结果保留为历史记录。请重新逐项核对字段，并另行授权本次模拟评估。");
+  }));
+  $("read-parent-run").addEventListener("click",()=>action(()=>refreshRun(state.run?.parent_run_id)));
   $("restore-run").addEventListener("click",()=>action(()=>refreshRun($("restore-run-id").value.trim())));
   $("new-business").addEventListener("click",()=>{if(state.busy)return;clearRun();notice("已退出当前编辑；可发起新业务。旧运行可凭运行 ID 恢复。");});
   $("health-refresh").addEventListener("click",()=>action(checkHealth));
