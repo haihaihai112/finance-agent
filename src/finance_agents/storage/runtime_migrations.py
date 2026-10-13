@@ -5,7 +5,7 @@ interrupted orphans; never infer an association or replay a financial tool.
 MySQL DDL commits independently, so each column addition is restart-safe.
 """
 
-from sqlalchemy import inspect, text
+from sqlalchemy import JSON, String, column, inspect, select, table, text, update
 
 
 def migrate_runtime_requests(engine):
@@ -22,11 +22,30 @@ def migrate_runtime_requests(engine):
                 connection.execute(
                     text(f"ALTER TABLE runtime_requests ADD COLUMN {name} {sql_type}")
                 )
-        connection.execute(
-            text(
-                "UPDATE runtime_requests SET status = CASE WHEN result IS NULL OR result = 'null' THEN 'interrupted' ELSE 'completed' END WHERE status IS NULL"
-            )
+        legacy_requests = table(
+            "runtime_requests",
+            column("user_id", String),
+            column("request_id", String),
+            column("result", JSON),
+            column("status", String),
         )
+        # Let the dialect deserialize JSON. SQL NULL and JSON null both become
+        # None, independently of database JSON-vs-string comparison semantics.
+        pending = (
+            connection.execute(select(legacy_requests).where(legacy_requests.c.status.is_(None)))
+            .mappings()
+            .all()
+        )
+        for row in pending:
+            connection.execute(
+                update(legacy_requests)
+                .where(
+                    legacy_requests.c.user_id == row["user_id"],
+                    legacy_requests.c.request_id == row["request_id"],
+                    legacy_requests.c.status.is_(None),
+                )
+                .values(status="interrupted" if row["result"] is None else "completed")
+            )
         connection.execute(
             text(
                 "UPDATE runtime_requests SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL"

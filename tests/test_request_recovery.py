@@ -86,6 +86,10 @@ def test_existing_request_table_migrates_without_guessing_association(tmp_path):
         connection.execute(
             text("INSERT INTO runtime_requests VALUES ('u','jsonnull','hash','null')")
         )
+        # Whitespace is valid JSON: its deserialized value is still None.
+        connection.execute(
+            text("INSERT INTO runtime_requests VALUES ('u','paddednull','hash',' null ')")
+        )
     migrated = RuntimeStore(engine)
     row = migrated.get_request("u", "legacy")
     assert row["status"] == "interrupted"
@@ -95,6 +99,21 @@ def test_existing_request_table_migrates_without_guessing_association(tmp_path):
     assert migrated.get_request("u", "done")["status"] == "completed"
     assert migrated.get_request("u", "done")["run_id"] is None
     assert migrated.get_request("u", "jsonnull")["status"] == "interrupted"
+    assert migrated.get_request("u", "paddednull")["status"] == "interrupted"
+    with engine.connect() as connection:
+        original_results = connection.execute(
+            text("SELECT request_id, result FROM runtime_requests ORDER BY request_id")
+        ).all()
+    repeated = RuntimeStore(engine)
+    assert repeated.get_request("u", "paddednull")["status"] == "interrupted"
+    assert repeated.get_request("u", "done")["status"] == "completed"
+    with engine.connect() as connection:
+        assert (
+            connection.execute(
+                text("SELECT request_id, result FROM runtime_requests ORDER BY request_id")
+            ).all()
+            == original_results
+        )
 
 
 def test_resume_checkpoint_failure_does_not_consume_request(store):
