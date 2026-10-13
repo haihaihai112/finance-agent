@@ -58,3 +58,26 @@ Playwright驱动真实Edge，项目虚拟环境、无DeepSeek密钥、stdio MCP�
 最终执行scripts/verify.ps1（隔离Python）：163 passed、4 skipped（26.51秒）；Ruff check通过；format --check报告76 files already formatted；compileall通过。新增DeepSeek验收脚本的模型匹配/缺失/不一致、无Key及异常usage等测试均为合成transport，不构成真实调用证据。正式浏览器全场景通过，服务已停止。源码包和本地Git整理结果见最终交付。
 
 最终独立审阅通过；验收脚本对异常usage单独分类并保留已验证内容和模型事实，相关合成测试及提交后完整回归通过。本地分支review-revisions保留，未发布远程。
+
+## 个人项目完整交付验收
+
+2026-10-13 晚间：按个人项目交付计划补齐历史分页、运行事件、JSON/Markdown结果下载、请求定位与显式异常恢复、离线启动诊断、VS Code任务和[明日验收清单](personal-project-acceptance.md)。任务独立审阅及整体审阅完成；整体审阅发现的“POST未到达服务端时永久锁定”已修复并经过限定复审。
+
+最终在独立、无system-site-packages的Python3.13.9环境运行 `scripts/verify.ps1`：**181 passed，4 skipped，33.18秒**，无测试警告。四项跳过均为需专用MYSQL_TEST_URL的真实MySQL测试。Ruff check通过、format --check为80文件已格式化，compileall通过；pip check无损坏依赖。
+
+实际使用项目现有`.venv`执行 `scripts/start.ps1 -Port 8794`，独立数据目录、SQLite、规则模式、stdio MCP。诊断与应用启动成功，首页HTTP200、health为ok；健康结果明确model_configured=false、credit_mode=mock、external_services_verified=false。验收服务使用合成资料，未写入用户原运行目录，验收后停止。
+
+两个正式Playwright/Edge脚本在最终代码上运行，均退出0：
+
+- `review-revisions.cjs`：四种受控理赔摘要、两种受控材料恢复失败、真实本地贷款完成/复制/改金额与期限/重新确认授权/历史不变。
+- `personal-delivery.cjs`：1440px和390px，服务器已处理POST但响应丢失后的编号保存、刷新、只读定位及只发生一次POST；历史读取/分页/原子资料恢复、运行事件、鉴权与大金额字符串下载、404和中断409反馈、会话切换清理。
+- 新增发送前中断：真实POST在到达服务端前被浏览器拦截，真实GET返回404；不自动解锁或重试。仅匹配待定位编号的404允许明确确认后解除本地提交锁定；任意编号404、503、改输入均不可解除。取消确认保留锁定，原编号与操作类型会话绑定保存，刷新可继续追查；解除不取消服务端请求。
+- 真实本地投资/理赔追问、税务表单逐项确认及年度税额3480.00，实际JSON/Markdown下载通过。精度超过JavaScript安全整数的下载案例是受控响应夹具，不能当作真实金融数据。
+
+额外HTTP验收使用独立新会话，五意图分别实际完成并导出两种格式：investment、policy_tax与other返回real；claim和loan返回mock。核对结论、引用、限制、数据模式及计算与原结果一致（贷款计算中身份/授权引用按设计移除）。投资使用已核验的公开日频快照，此次未重新执行联网采集；other的real标记不能解释为实际天气数据来源。
+
+启动诊断新增7项行为测试，包括离线无写入、凭据不输出、dotenv逐行变量展开/重复赋值/环境优先级、空MCP配置拒绝。配置检查不替代二进制加载、OCR推理或真实外部连接验证。
+
+交付取舍：旧运行没有创建时间，迁移以最早事件回填，无事件以epoch标示未知；旧历史时间精度有限，不能宣称全部恢复精确创建时刻。旧库需备份并由单进程初始化，当前检查后ALTER不能保证并发迁移。MySQL DATETIME未保留亚秒精度，同秒以run_id确定排序；真实MySQL启用前应验证相应精度与迁移。404也不能排除迟到处理，用户解锁前须核对历史，以免自行重新发起重复业务。这些边界已写入验收手册。
+
+DeepSeek未配置真实Key，实际付费请求0次；MySQL真实链路仍未验证。OCR已具备实际ONNX路径及合成材料测试，但没有代表性准确率结论。保单/信贷演示不是赔付或授信服务。个人项目交付完成后暂停夜间接续，不继续增加无关需求；源码仅在本地分支保留。

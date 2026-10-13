@@ -51,3 +51,7 @@ Ownership：scripts/doctor.py、scripts/start.ps1、.vscode/tasks.json、tests/t
 ## Task 4: 整体验收与交付
 
 独立审阅各任务与整轮diff，修复重要问题。干净venv跑verify.ps1；隔离SQLite与stdio启动服务，运行两套正式Edge浏览器验收；记录真实结果与skip。更新docs/verification.md、重新安全打包并校验、Git本地提交；具体工作完成后暂停夜间heartbeat，不再扩需求。
+
+## 最终交付状态
+
+Task1/2/3已实现并通过独立任务审阅；dotenv展开和页面旧提示已修复。整体审阅追加的“发送前断网造成永久锁定”已用明确确认后的本地解除流程修复，保留编号追查，不自动重试；限定复审通过。Task4最终代码回归181passed/4skipped，两个Edge脚本均退出0，五意图实际本地运行和两种格式导出通过。具体证据与外部服务边界见docs/verification.md；验收操作见docs/personal-project-acceptance.md。旧库单初始化、旧时间回填精度和未到达请求可能迟到的取舍已记录，真实MySQL/DeepSeek未验证。
