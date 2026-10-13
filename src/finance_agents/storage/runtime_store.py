@@ -5,7 +5,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, MetaData, String, Table
-from sqlalchemy import UniqueConstraint, and_, insert, select, update
+from sqlalchemy import UniqueConstraint, and_, func, insert, inspect, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from finance_agents.workflow.state import SessionState
@@ -26,6 +26,7 @@ runs = Table(
     Column("user_id", String(64), nullable=False),
     Column("version", Integer, nullable=False),
     Column("state", JSON, nullable=False),
+    Column("created_at", DateTime, nullable=False, default=lambda: utcnow()),
 )
 consents = Table(
     "runtime_consents",
@@ -68,9 +69,29 @@ class RuntimeStore:
     def __init__(self, engine):
         self.engine = engine
         metadata.create_all(engine)
+        self._migrate_run_creation_time()
         from finance_agents.storage.runtime_migrations import migrate_runtime_requests
 
         migrate_runtime_requests(engine)
+
+    def _migrate_run_creation_time(self):
+        """Legacy event time is inferred; absent history is explicitly unknown (epoch)."""
+        if "created_at" not in {
+            c["name"] for c in inspect(self.engine).get_columns("runtime_runs")
+        }:
+            with self.engine.begin() as connection:
+                connection.execute(text("ALTER TABLE runtime_runs ADD COLUMN created_at DATETIME"))
+        with self.engine.begin() as connection:
+            earliest = (
+                select(func.min(events.c.created_at))
+                .where(events.c.run_id == runs.c.run_id)
+                .scalar_subquery()
+            )
+            connection.execute(
+                update(runs)
+                .where(runs.c.created_at.is_(None))
+                .values(created_at=func.coalesce(earliest, datetime(1970, 1, 1)))
+            )
 
     def create_session(self, lifetime=timedelta(hours=24)):
         token = secrets.token_urlsafe(32)
@@ -148,9 +169,17 @@ class RuntimeStore:
         if result.rowcount != 1:
             raise ValueError("运行版本冲突，请重新加载后提交")
 
-    def list_runs(self, user_id):
+    def list_runs(self, user_id, limit=50, offset=0):
+        if not 1 <= limit <= 100 or offset < 0:
+            raise ValueError("分页参数超出范围")
         with self.engine.connect() as connection:
-            rows = connection.execute(select(runs.c.state).where(runs.c.user_id == user_id)).all()
+            rows = connection.execute(
+                select(runs.c.state)
+                .where(runs.c.user_id == user_id)
+                .order_by(runs.c.created_at.desc(), runs.c.run_id.desc())
+                .limit(limit)
+                .offset(offset)
+            ).all()
         return [row[0] for row in rows]
 
     def grant_consent(self, user_id, run_id, lifetime=timedelta(minutes=30)):

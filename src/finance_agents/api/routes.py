@@ -1,8 +1,10 @@
 """同源工作台 API，身份仅来自服务端签发的会话凭据。"""
 
 import asyncio
+import hashlib
+from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -91,15 +93,43 @@ def interrupt_request(request_id: str, request: Request, auth=Depends(authentica
     return service(request).store.interrupt_request(auth[0]["user_id"], request_id)
 
 
-@router.get("/api/v1/runs")
-def list_runs(request: Request, auth=Depends(authenticated)):
+@router.get("/api/v1/runs", response_model=list[WorkflowResponse])
+def list_runs(
+    request: Request,
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    auth=Depends(authenticated),
+):
     from finance_agents.workflow.state import SessionState
 
     instance = service(request)
     return [
         instance.response(SessionState.model_validate(r))
-        for r in instance.store.list_runs(auth[0]["user_id"])
+        for r in instance.store.list_runs(auth[0]["user_id"], limit, offset)
     ]
+
+
+@router.get("/api/v1/runs/{run_id}/export")
+def export_run(
+    run_id: str,
+    request: Request,
+    format: Literal["json", "markdown"] = "json",
+    auth=Depends(authenticated),
+):
+    from finance_agents.reporting import build_report, render_report
+
+    state = service(request).store.get_run(run_id, auth[0]["user_id"])
+    content, media_type, extension = render_report(build_report(state), format)
+    # Hash the identifier to keep the attachment header safe even for legacy/custom IDs.
+    filename = "finance-report-" + hashlib.sha256(run_id.encode()).hexdigest()[:16]
+    return Response(
+        content,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}.{extension}"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.get("/api/v1/runs/{run_id}", response_model=WorkflowResponse)
