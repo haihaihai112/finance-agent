@@ -4,6 +4,8 @@
   const $ = (id) => document.getElementById(id);
   const STORAGE_KEY = "finance-workbench-session-v1";
   const REQUEST_KEY = "finance-workbench-request-v1";
+  const ABANDONED_KEY = "finance-workbench-abandoned-requests-v1";
+  let missingPendingId=null,abandonedRequests=[];
   const HISTORY_LIMIT = 10;
   let historyOffset=0,historyCount=0,pendingRequest=null,requestProcessing=false,requestStale=false;
   const TITLES = {investment:"投资咨询",claim:"理赔申请",loan:"贷款申请",policy_tax:"政策 / 税务",other:"其他"};
@@ -111,6 +113,7 @@
     ["export-json","export-markdown"].forEach(id=>{$(id).disabled=state.busy || !active || !state.run?.result;});
     $("interrupt-request").hidden=!requestProcessing;
     $("interrupt-request").disabled=state.busy || !active || !requestStale;
+    $("release-pending-request").disabled=state.busy || !active || !pendingRequest || missingPendingId!==pendingRequest.request_id || $("request-id-input").value.trim()!==missingPendingId;
     ["send-query","confirm-resume","copy-loan"].forEach(id=>{if(pendingRequest) $(id).disabled=true;});
   }
   class ApiError extends Error { constructor(message,status,detail) {super(message);this.status=status;this.detail=detail;} }
@@ -178,6 +181,7 @@
     persist();syncControls();
   }
   function clearSession() {
+    missingPendingId=null;abandonedRequests=[];sessionStorage.removeItem(ABANDONED_KEY);renderAbandoned();
     pendingRequest=null;requestProcessing=false;requestStale=false;historyOffset=0;historyCount=0;
     $("history-page").textContent="第 1 页";
     sessionStorage.removeItem(REQUEST_KEY);$("pending-request-id").textContent="";$("request-id-input").value="";$("request-status").textContent="";
@@ -462,6 +466,7 @@
     applyRun(response);
   }
   function savePending(request) {
+    missingPendingId=null;
     pendingRequest=request;
     if(request) {
       // Only identifiers and operation, never message, form, material or authorization.
@@ -493,11 +498,15 @@
     $("history-page").textContent=`第 ${historyOffset/HISTORY_LIMIT+1} 页`;
   }
   async function locateRequest() {
+    missingPendingId=null;
+    const id=$("request-id-input").value.trim();
+    let lookupSucceeded=false;
     $("request-status").textContent="正在定位请求…";
     try {
-    const id=$("request-id-input").value.trim();if(!id)throw new Error("请输入请求 ID。");
+    if(!id)throw new Error("请输入请求 ID。");
     requestProcessing=false;requestStale=false;
     const request=await api(`/api/v1/requests/${encodeURIComponent(id)}`);
+    lookupSucceeded=true;
     requestProcessing=request.status==="processing";
     const rawTime=String(request.updated_at || "");
     const time=Date.parse(/[Zz]|[+-]\d\d:\d\d$/.test(rawTime) ? rawTime : rawTime+"Z");
@@ -510,6 +519,10 @@
     }
     } catch(error) {
       $("request-status").textContent="查询失败，请核对请求 ID 和会话，或显式刷新重查；待恢复请求仍保留。";
+      if(!lookupSucceeded && error.status===404 && pendingRequest?.request_id===id && $("request-id-input").value.trim()===id) {
+        missingPendingId=id;
+        $("request-status").textContent+=" 当前尚未找到此待定位请求；404 不能排除迟到处理。可明确确认后解除本地提交锁定，之后请检查历史。";
+      }
       throw error;
     }
   }
@@ -526,6 +539,21 @@
     link.href=url;link.download=`finance-${state.run.run_id}.${format==="json" ? "json" : "md"}`;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
     notice("报告已下载，请结合事实、引用、限制及数据范围阅读。");
   }
+  function renderAbandoned() {
+    $("abandoned-requests").replaceChildren();
+    for(const request of abandonedRequests) {
+      const row=node("li",`${request.operation} · ${request.request_id} `),button=node("button","填入定位 ID");button.type="button";
+      button.addEventListener("click",()=>{missingPendingId=null;requestProcessing=false;requestStale=false;$("request-id-input").value=request.request_id;syncControls();});row.append(button);$("abandoned-requests").append(row);
+    }
+  }
+  $("request-id-input").addEventListener("input",()=>{missingPendingId=null;requestProcessing=false;requestStale=false;syncControls();});
+  $("release-pending-request").addEventListener("click",()=>{
+    if(state.busy || !pendingRequest || missingPendingId!==pendingRequest.request_id || $("request-id-input").value.trim()!==missingPendingId)return;
+    if(!confirm("解除本地提交锁定不会取消服务端请求，404 不能证明请求不会迟到处理。请检查历史并继续定位原请求，避免重复业务。确认理解风险并解除锁定？"))return;
+    abandonedRequests.push({request_id:pendingRequest.request_id,operation:pendingRequest.operation});
+    sessionStorage.setItem(ABANDONED_KEY,JSON.stringify({session_id:state.session.session_id,requests:abandonedRequests}));
+    savePending(null);renderAbandoned();syncControls();notice("已解除本地提交锁定；原请求未取消，编号保留供定位。请检查历史后决定是否另行发起业务；不会自动重试。","warning");
+  });
   $("history-refresh").addEventListener("click",()=>action(loadHistory));
   $("history-prev").addEventListener("click",()=>action(async()=>{const old=historyOffset;historyOffset=Math.max(0,old-HISTORY_LIMIT);try{await loadHistory();}catch(error){historyOffset=old;throw error;}}));
   $("history-next").addEventListener("click",()=>action(async()=>{const old=historyOffset;historyOffset+=HISTORY_LIMIT;try{await loadHistory();}catch(error){historyOffset=old;throw error;}}));
@@ -638,9 +666,12 @@
       const request=JSON.parse(sessionStorage.getItem(REQUEST_KEY) || "null");
       if(request?.session_id===state.session.session_id && typeof request.request_id==="string" && ["query","resume","copy"].includes(request.operation))savePending({request_id:request.request_id,operation:request.operation});
       else sessionStorage.removeItem(REQUEST_KEY);
+      const abandoned=JSON.parse(sessionStorage.getItem(ABANDONED_KEY) || "null");
+      if(abandoned?.session_id===state.session.session_id && Array.isArray(abandoned.requests))abandonedRequests=abandoned.requests.filter(request=>typeof request.request_id==="string" && ["query","resume","copy"].includes(request.operation)).map(request=>({request_id:request.request_id,operation:request.operation}));
+      else sessionStorage.removeItem(ABANDONED_KEY);
     }
   } catch {notice("会话缓存无法读取，请重新建立会话。","warning");}
-  selectEntryMode(state.entryMode);syncControls();checkHealth();
+  renderAbandoned();selectEntryMode(state.entryMode);syncControls();checkHealth();
   // Refresh restores an existing run by read only. It never resends a financial query.
   if(state.session && $("restore-run-id").value) action(async()=>{
     await refreshRun($("restore-run-id").value);

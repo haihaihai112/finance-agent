@@ -6,7 +6,27 @@ const base=process.env.FINANCE_BASE_URL || "http://127.0.0.1:8791";
 async function settled(page){await page.waitForFunction(()=>!document.getElementById("create-session").disabled);}
 (async()=>{
  const browser=await chromium.launch({channel:"msedge",headless:true});
- try{for(const width of [1440,390]){
+ try{
+ const recoveryContext=await browser.newContext();const recoveryPage=await recoveryContext.newPage();
+ await recoveryPage.goto(base);await recoveryPage.locator("#create-session").click();await settled(recoveryPage);
+ let rejectedPosts=0,rejectedId;
+ await recoveryPage.route("**/api/v1/queries",route=>{rejectedPosts++;rejectedId=route.request().postDataJSON().request_id;return route.abort("failed");});
+ await recoveryPage.locator("#message").fill("你好");await recoveryPage.locator("#send-query").click();await settled(recoveryPage);
+ await recoveryPage.locator("#locate-request").click();await settled(recoveryPage);
+ assert.match(await recoveryPage.locator("#notice").textContent(),/404/);assert.equal(rejectedPosts,1);assert.ok(await recoveryPage.locator("#send-query").isDisabled());
+ assert.equal(await recoveryPage.locator("#release-pending-request").count(),1,"404 pending recovery must provide explicit release");
+ await recoveryPage.locator("#request-id-input").fill("arbitrary-404");await recoveryPage.locator("#locate-request").click();await settled(recoveryPage);assert.ok(await recoveryPage.locator("#release-pending-request").isDisabled());
+ await recoveryPage.locator("#request-id-input").fill(rejectedId);assert.ok(await recoveryPage.locator("#release-pending-request").isDisabled());
+ await recoveryPage.route(`**/api/v1/requests/${rejectedId}`,route=>route.fulfill({status:503,json:{detail:"controlled lookup failure"}}));await recoveryPage.locator("#locate-request").click();await settled(recoveryPage);assert.ok(await recoveryPage.locator("#release-pending-request").isDisabled());await recoveryPage.unroute(`**/api/v1/requests/${rejectedId}`);
+ await recoveryPage.locator("#locate-request").click();await settled(recoveryPage);
+ recoveryPage.once("dialog",dialog=>dialog.dismiss());await recoveryPage.locator("#release-pending-request").click();assert.ok(await recoveryPage.locator("#send-query").isDisabled());
+ recoveryPage.once("dialog",dialog=>{assert.match(dialog.message(),/不会取消.*历史/);return dialog.accept();});await recoveryPage.locator("#release-pending-request").click();assert.ok(await recoveryPage.locator("#send-query").isEnabled());assert.equal(rejectedPosts,1);
+ const abandoned=await recoveryPage.evaluate(()=>JSON.parse(sessionStorage.getItem("finance-workbench-abandoned-requests-v1")));assert.deepEqual(Object.keys(abandoned).sort(),["requests","session_id"]);assert.deepEqual(abandoned.requests,[{request_id:rejectedId,operation:"query"}]);
+ await recoveryPage.reload();await settled(recoveryPage);assert.ok((await recoveryPage.locator("#abandoned-requests").textContent()).includes(rejectedId));await recoveryPage.locator("#abandoned-requests").locator("..").locator("summary").click();await recoveryPage.locator("#abandoned-requests button").click();assert.equal(await recoveryPage.locator("#request-id-input").inputValue(),rejectedId);
+ await recoveryPage.unroute("**/api/v1/queries");await recoveryPage.locator("#message").fill("你好");await recoveryPage.locator("#send-query").click();await settled(recoveryPage);assert.notEqual(await recoveryPage.locator("#run-id").textContent(),"尚未发起");assert.equal(rejectedPosts,1);
+ await recoveryPage.locator("#create-session").click();await settled(recoveryPage);assert.equal(await recoveryPage.evaluate(()=>sessionStorage.getItem("finance-workbench-abandoned-requests-v1")),null);
+ console.log("PASS pre-server POST failure: real GET404, explicit acknowledged same-session release, retained identifiers after reload, no POST replay");await recoveryContext.close();
+ for(const width of [1440,390]){
  const context=await browser.newContext({viewport:{width,height:900},acceptDownloads:true});const page=await context.newPage();
  await page.goto(base);await page.locator("#create-session").click();await settled(page);
  assert.equal(await page.locator("#history-refresh").count(),1,"history refresh must exist");
