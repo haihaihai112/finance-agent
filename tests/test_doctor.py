@@ -93,3 +93,14 @@ def test_explicit_empty_transport_is_invalid(tmp_path):
     )
     assert report["exit_code"] == 1
     assert any(row["name"] == "mcp" and row["status"] == "blocking" for row in report["checks"])
+
+
+def test_repeated_file_assignment_preserves_sequential_interpolation(tmp_path):
+    doctor = load_doctor()
+    (tmp_path / ".env").write_text(
+        "TRANSPORT=stdio\nMCP_TRANSPORT=${TRANSPORT}\nTRANSPORT=invalid\n"
+    )
+    report = doctor.diagnose(
+        tmp_path, {}, available=lambda _: True, port_used=lambda _: False, model_paths=[]
+    )
+    assert report["exit_code"] == 0

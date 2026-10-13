@@ -86,11 +86,11 @@ def diagnose(
             # load_dotenv(override=False) resolves references in file order, with
             # process values taking precedence over preceding file assignments.
             # Reuse dotenv's atom parser without touching os.environ.
-            from dotenv import dotenv_values
+            from dotenv.main import DotEnv
             from dotenv.variables import parse_variables
 
             resolved = {}
-            for name, value in dotenv_values(env_file, interpolate=False).items():
+            for name, value in DotEnv(env_file, interpolate=False).parse():
                 if value is None:
                     resolved[name] = None
                 else:
