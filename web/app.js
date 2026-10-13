@@ -3,6 +3,9 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const STORAGE_KEY = "finance-workbench-session-v1";
+  const REQUEST_KEY = "finance-workbench-request-v1";
+  const HISTORY_LIMIT = 10;
+  let historyOffset=0,historyCount=0,pendingRequest=null,requestProcessing=false,requestStale=false;
   const TITLES = {investment:"投资咨询",claim:"理赔申请",loan:"贷款申请",policy_tax:"政策 / 税务",other:"其他"};
   const DESCRIPTIONS = {
     auto:"由服务端根据自然语言识别五类业务；涉及多类业务时会先追问处理顺序。自动识别是入口模式。",
@@ -101,6 +104,14 @@
     $("restore-session-id").value=state.session?.session_id || "";
     $("consent-status").textContent=state.consentRef ? "已明确授权本次模拟评估" : "尚未授权";
     $("revoke-consent").hidden=!state.consentRef;
+    ["history-refresh","locate-request"].forEach(id=>{$(id).disabled=state.busy || !active;});
+    $("history-prev").disabled=state.busy || !active || historyOffset===0;
+    $("history-next").disabled=state.busy || !active || historyCount<HISTORY_LIMIT;
+    $("refresh-events").disabled=state.busy || !active || !state.run;
+    ["export-json","export-markdown"].forEach(id=>{$(id).disabled=state.busy || !active || !state.run?.result;});
+    $("interrupt-request").hidden=!requestProcessing;
+    $("interrupt-request").disabled=state.busy || !active || !requestStale;
+    ["send-query","confirm-resume","copy-loan"].forEach(id=>{if(pendingRequest) $(id).disabled=true;});
   }
   class ApiError extends Error { constructor(message,status,detail) {super(message);this.status=status;this.detail=detail;} }
   async function api(path,{method="GET",body,privateRequest=true}={}) {
@@ -157,6 +168,7 @@
     $("intent-description").textContent=DESCRIPTIONS[mode];persist();
   }
   function clearRun() {
+    $("event-list").replaceChildren(node("li","请选择运行后读取事件","empty"));
     state.run=null;state.intent=null;state.consentRef=null;state.conflict=false;state.controls.clear();
     ["form-panel","result-panel","consent-panel"].forEach((id)=>{$(id).hidden=true;});
     $("run-id").textContent="尚未发起";
@@ -166,6 +178,9 @@
     persist();syncControls();
   }
   function clearSession() {
+    pendingRequest=null;requestProcessing=false;requestStale=false;historyOffset=0;historyCount=0;
+    sessionStorage.removeItem(REQUEST_KEY);$("pending-request-id").textContent="";$("request-id-input").value="";$("request-status").textContent="";
+    $("history-list").replaceChildren(node("li","点击刷新读取本用户历史","empty"));$("event-list").replaceChildren();
     state.session=null;state.documents=[];state.extractions.clear();clearRun();
     $("restore-token").value="";$("chat-log").replaceChildren(node("p","建立会话后，可发起一条业务流程。","empty"));
     renderDocuments();renderExtractions();persist();syncControls();
@@ -418,6 +433,7 @@
   }
   function applyRun(response,{chat=true}={}) {
     if(!response?.run_id) throw new Error("服务端未返回运行 ID，请检查接口契约。");
+    $("event-list").replaceChildren(node("li","点击读取当前运行事件","empty"));
     state.run=response;state.conflict=false;
     $("run-id").textContent=response.run_id;$("restore-run-id").value=response.run_id;
     $("run-version").textContent=String(response.state_version);
@@ -441,9 +457,78 @@
   async function resume({message,confirmedFields={}}) {
     if(!state.run)throw new Error("请先发起业务。");
     if(state.conflict)throw new Error("请先刷新运行版本。");
-    const response=await api(`/api/v1/runs/${encodeURIComponent(state.run.run_id)}/resume`,{method:"POST",body:{request_id:crypto.randomUUID(),state_version:state.run.state_version,message,confirmed_fields:confirmedFields,attachment_ids:selectedDocuments(),consent_ref:state.consentRef}});
+    const response=await mutation(`/api/v1/runs/${encodeURIComponent(state.run.run_id)}/resume`,"resume",{state_version:state.run.state_version,message,confirmed_fields:confirmedFields,attachment_ids:selectedDocuments(),consent_ref:state.consentRef});
     applyRun(response);
   }
+  function savePending(request) {
+    pendingRequest=request;
+    if(request) {
+      // Only identifiers and operation, never message, form, material or authorization.
+      sessionStorage.setItem(REQUEST_KEY,JSON.stringify({session_id:state.session.session_id,...request}));
+      $("request-id-input").value=request.request_id;
+    } else sessionStorage.removeItem(REQUEST_KEY);
+    $("pending-request-id").textContent=request ? request.request_id : "";
+  }
+  async function mutation(path,operation,body) {
+    if(pendingRequest) throw new Error("存在处理结果未知的请求，请先定位请求；不会自动重复提交。");
+    const request_id=crypto.randomUUID();savePending({request_id,operation});
+    try {
+      const response=await api(path,{method:"POST",body:{...body,request_id}});
+      savePending(null);return response;
+    } catch(error) {
+      if(error.status>=400 && error.status<500) savePending(null);
+      else notice("响应未确认，请定位已保存的请求 ID；不会自动重复提交。","warning");
+      throw error;
+    }
+  }
+  async function loadHistory() {
+    const runs=await api(`/api/v1/runs?limit=${HISTORY_LIMIT}&offset=${historyOffset}`);
+    historyCount=runs.length;const list=$("history-list");list.replaceChildren();
+    if(!runs.length)list.append(node("li","本页暂无历史运行","empty"));
+    for(const run of runs) {
+      const item=node("li");item.append(node("div",`${TITLES[run.intent] || "待澄清"} · ${STATUS_LABELS[run.status] || run.status}`),node("div",run.run_id,"help"));
+      const button=node("button","读取此运行");button.type="button";button.addEventListener("click",()=>action(()=>refreshRun(run.run_id)));item.append(button);list.append(item);
+    }
+    $("history-page").textContent=`第 ${historyOffset/HISTORY_LIMIT+1} 页`;
+  }
+  async function locateRequest() {
+    const id=$("request-id-input").value.trim();if(!id)throw new Error("请输入请求 ID。");
+    requestProcessing=false;requestStale=false;
+    const request=await api(`/api/v1/requests/${encodeURIComponent(id)}`);
+    requestProcessing=request.status==="processing";
+    const rawTime=String(request.updated_at || "");
+    const time=Date.parse(/[Zz]|[+-]\d\d:\d\d$/.test(rawTime) ? rawTime : rawTime+"Z");
+    requestStale=requestProcessing && Number.isFinite(time) && Date.now()-time>300000;
+    $("request-status").textContent=requestProcessing ? "请求处理中。请显式刷新；不会重新提交。" : request.status==="completed" ? "请求已完成；正在读取业务状态，业务可能仍等待补充。" : request.status==="interrupted" ? "请求已人工中断；不会自动重试。" : "请求状态暂不可识别，请显式刷新。";
+    if(request.run_id && !requestProcessing) {
+      await refreshRun(request.run_id);
+      if(pendingRequest?.request_id===id)savePending(null);
+      notice("已定位请求并读取运行；请按运行的业务状态继续。");
+    }
+  }
+  async function loadEvents() {
+    const events=await api(`/api/v1/runs/${encodeURIComponent(state.run.run_id)}/events`);
+    const labels={intent:"意图识别",agent_result:"专业 Agent 返回",finished:"业务结束",consent:"授权变更",request_interrupted:"请求人工中断",cancelled:"运行取消",routed:"意图路由",validation:"字段校验",validated:"字段校验",waiting_user:"等待用户",completed:"业务完成",tool_call:"工具调用",tool_result:"工具返回",agent_start:"Agent 开始",agent_end:"Agent 完成",transition:"状态转换"};
+    $("event-list").replaceChildren(...events.map(event=>node("li",`${labels[event.event_type] || "工作流事件"} · ${event.created_at || "时间未提供"}（UTC）`)));
+    if(!events.length)$("event-list").append(node("li","暂无事件","empty"));
+  }
+  async function downloadReport(format) {
+    const response=await fetch(`/api/v1/runs/${encodeURIComponent(state.run.run_id)}/export?format=${format}`,{headers:{Authorization:`Bearer ${state.session.token}`}});
+    if(!response.ok)throw new Error(`报告下载失败（HTTP ${response.status}），请刷新运行核对结果。`);
+    const blob=await response.blob(),url=URL.createObjectURL(blob),link=node("a");
+    link.href=url;link.download=`finance-${state.run.run_id}.${format==="json" ? "json" : "md"}`;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+    notice("报告已下载，请结合事实、引用、限制及数据范围阅读。");
+  }
+  $("history-refresh").addEventListener("click",()=>action(loadHistory));
+  $("history-prev").addEventListener("click",()=>action(async()=>{const old=historyOffset;historyOffset=Math.max(0,old-HISTORY_LIMIT);try{await loadHistory();}catch(error){historyOffset=old;throw error;}}));
+  $("history-next").addEventListener("click",()=>action(async()=>{const old=historyOffset;historyOffset+=HISTORY_LIMIT;try{await loadHistory();}catch(error){historyOffset=old;throw error;}}));
+  $("locate-request").addEventListener("click",()=>action(locateRequest));
+  $("interrupt-request").addEventListener("click",()=>action(async()=>{
+    const id=$("request-id-input").value.trim();
+    await api(`/api/v1/requests/${encodeURIComponent(id)}/interrupt`,{method:"POST"});await locateRequest();
+  }));
+  $("refresh-events").addEventListener("click",()=>action(loadEvents));
+  ["json","markdown"].forEach(format=>{$(`export-${format}`).addEventListener("click",()=>action(()=>downloadReport(format)));});
   async function checkHealth() {
     try {
       const health=await api("/health",{privateRequest:false});
@@ -501,9 +586,9 @@
       await resume({message});
     } else {
       state.consentRef=null;
-      const body={session_id:state.session.session_id,request_id:crypto.randomUUID(),message,attachment_ids:selectedDocuments()};
+      const body={session_id:state.session.session_id,message,attachment_ids:selectedDocuments()};
       if(state.entryMode!=="auto") body.intent_hint=state.entryMode;
-      const response=await api("/api/v1/queries",{method:"POST",body});
+      const response=await mutation("/api/v1/queries","query",body);
       applyRun(response);
     }
     $("message").value="";
@@ -528,7 +613,7 @@
   $("refresh-run").addEventListener("click",()=>action(()=>refreshRun()));
   $("copy-loan").addEventListener("click",()=>action(async()=>{
     if(!canCopyLoan())throw new Error("仅已结束的贷款运行可复制为新申请。");
-    const response=await api(`/api/v1/runs/${encodeURIComponent(state.run.run_id)}/copy`,{method:"POST",body:{request_id:crypto.randomUUID()}});
+    const response=await mutation(`/api/v1/runs/${encodeURIComponent(state.run.run_id)}/copy`,"copy",{});
     try {await restoreRunDocuments(response);}
     catch(error) {throw new Error(`新申请 ${response.run_id} 已创建，但资料恢复失败。当前仍显示原运行；请按新申请 ID 重新读取。\n${error.message}`);}
     selectEntryMode("loan");applyRun(response);
@@ -543,6 +628,9 @@
     if(saved?.session?.session_id && saved?.session?.token) {
       state.session=saved.session;state.entryMode=Object.hasOwn(TITLES,saved.entryMode) ? saved.entryMode : "auto";
       if(saved.run_id) $("restore-run-id").value=saved.run_id;
+      const request=JSON.parse(sessionStorage.getItem(REQUEST_KEY) || "null");
+      if(request?.session_id===state.session.session_id && typeof request.request_id==="string" && ["query","resume","copy"].includes(request.operation))savePending({request_id:request.request_id,operation:request.operation});
+      else sessionStorage.removeItem(REQUEST_KEY);
     }
   } catch {notice("会话缓存无法读取，请重新建立会话。","warning");}
   selectEntryMode(state.entryMode);syncControls();checkHealth();
