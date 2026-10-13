@@ -51,6 +51,10 @@ class ScopedDispatcher:
             state = self.runtime_store.get_run(run_id, identity["user_id"])
             if state.session_id != identity["session_id"]:
                 raise PermissionError("Run does not belong to the authenticated session")
+            if state.status in {"cancelled", "failed"}:
+                return rejection(
+                    tool_name, "RUN_CLOSED", "Run was cancelled or failed; tool calls are closed"
+                )
             if expected_state is not None and (
                 expected_state.run_id != state.run_id
                 or expected_state.user_id != identity["user_id"]
@@ -126,7 +130,9 @@ class ScopedDispatcher:
             )
 
     async def dispatch(self, tool_name, arguments, token, run_id, auth, expected_state=None):
-        denied = self.validate(tool_name, arguments, token, run_id, auth, expected_state)
+        denied = await asyncio.to_thread(
+            self.validate, tool_name, arguments, token, run_id, auth, expected_state
+        )
         if denied:
             return denied
         service = self.services.get(tool_name.split(".", 1)[0])
@@ -185,8 +191,14 @@ class ScopedMCPClient:
         self.dispatcher = ScopedDispatcher(runtime_store, services)
 
     async def call(self, tool_name, arguments, auth):
-        denied = self.dispatcher.validate(
-            tool_name, arguments, self.token, self.state.run_id, auth, self.state
+        denied = await asyncio.to_thread(
+            self.dispatcher.validate,
+            tool_name,
+            arguments,
+            self.token,
+            self.state.run_id,
+            auth,
+            self.state,
         )
         if denied:
             return denied

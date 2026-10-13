@@ -1,10 +1,17 @@
 """同源工作台 API，身份仅来自服务端签发的会话凭据。"""
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from fastapi.responses import Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from finance_agents.contracts.requests import ConsentRequest, QueryRequest, ResumeRequest
+from finance_agents.contracts.requests import (
+    CopyRunRequest,
+    ConsentRequest,
+    QueryRequest,
+    ResumeRequest,
+)
 from finance_agents.contracts.results import Intent, WorkflowResponse
 from finance_agents.workflow.topology import AGENTS, BRANCH_STEPS, MCP_SERVICES
 
@@ -53,7 +60,7 @@ async def architecture():
 
 
 @router.post("/api/v1/sessions")
-async def sessions(request: Request):
+def sessions(request: Request):
     return service(request).store.create_session()
 
 
@@ -67,8 +74,25 @@ async def resume(run_id: str, body: ResumeRequest, request: Request, auth=Depend
     return await service(request).resume(run_id, body, *auth)
 
 
+@router.post("/api/v1/runs/{run_id}/copy", response_model=WorkflowResponse)
+async def copy_run(
+    run_id: str, body: CopyRunRequest, request: Request, auth=Depends(authenticated)
+):
+    return await service(request).copy_loan(run_id, body, auth[0])
+
+
+@router.get("/api/v1/requests/{request_id}")
+def request_status(request_id: str, request: Request, auth=Depends(authenticated)):
+    return service(request).store.get_request(auth[0]["user_id"], request_id)
+
+
+@router.post("/api/v1/requests/{request_id}/interrupt")
+def interrupt_request(request_id: str, request: Request, auth=Depends(authenticated)):
+    return service(request).store.interrupt_request(auth[0]["user_id"], request_id)
+
+
 @router.get("/api/v1/runs")
-async def list_runs(request: Request, auth=Depends(authenticated)):
+def list_runs(request: Request, auth=Depends(authenticated)):
     from finance_agents.workflow.state import SessionState
 
     instance = service(request)
@@ -79,13 +103,13 @@ async def list_runs(request: Request, auth=Depends(authenticated)):
 
 
 @router.get("/api/v1/runs/{run_id}", response_model=WorkflowResponse)
-async def run(run_id: str, request: Request, auth=Depends(authenticated)):
+def run(run_id: str, request: Request, auth=Depends(authenticated)):
     instance = service(request)
     return instance.response(instance.store.get_run(run_id, auth[0]["user_id"]))
 
 
 @router.get("/api/v1/runs/{run_id}/events")
-async def events(run_id: str, request: Request, auth=Depends(authenticated)):
+def events(run_id: str, request: Request, auth=Depends(authenticated)):
     return service(request).store.get_events(run_id, auth[0]["user_id"])
 
 
@@ -95,10 +119,12 @@ async def cancel(run_id: str, request: Request, auth=Depends(authenticated)):
 
 
 @router.post("/api/v1/runs/{run_id}/consent")
-async def consent(run_id: str, body: ConsentRequest, request: Request, auth=Depends(authenticated)):
+def consent(run_id: str, body: ConsentRequest, request: Request, auth=Depends(authenticated)):
     instance = service(request)
     user_id = auth[0]["user_id"]
-    instance.store.get_run(run_id, user_id)
+    state = instance.store.get_run(run_id, user_id)
+    if body.granted and state.status != "waiting_user":
+        raise ValueError("仅等待用户确认的运行可以获得新授权")
     # Revocation covers all previously issued references for this user/run.
     instance.store.revoke_run_consents(user_id, run_id)
     reference = instance.store.grant_consent(user_id, run_id) if body.granted else None
@@ -112,18 +138,20 @@ async def upload(file: UploadFile, request: Request, auth=Depends(authenticated)
     content = await file.read(instance.settings.max_upload_bytes + 1)
     if len(content) > instance.settings.max_upload_bytes:
         raise HTTPException(413, "文件超出大小限制")
-    return instance.documents.save(auth[0]["user_id"], file.filename, content, file.content_type)
+    return await asyncio.to_thread(
+        instance.documents.save, auth[0]["user_id"], file.filename, content, file.content_type
+    )
 
 
 @router.get("/api/v1/documents/{document_id}")
-async def document(document_id: str, request: Request, auth=Depends(authenticated)):
+def document(document_id: str, request: Request, auth=Depends(authenticated)):
     info = service(request).documents.get_info(auth[0]["user_id"], document_id)
     info.pop("extraction_json", None)
     return info
 
 
 @router.get("/api/v1/documents/{document_id}/download")
-async def download(document_id: str, request: Request, auth=Depends(authenticated)):
+def download(document_id: str, request: Request, auth=Depends(authenticated)):
     instance = service(request)
     info = instance.documents.get_info(auth[0]["user_id"], document_id)
     return Response(
@@ -138,7 +166,7 @@ async def extract(document_id: str, request: Request, auth=Depends(authenticated
 
 
 @router.delete("/api/v1/consents/{consent_ref}")
-async def revoke(consent_ref: str, request: Request, auth=Depends(authenticated)):
+def revoke(consent_ref: str, request: Request, auth=Depends(authenticated)):
     service(request).store.revoke_consent(consent_ref, auth[0]["user_id"])
     return {"granted": False, "consent_ref": None}
 
@@ -146,7 +174,7 @@ async def revoke(consent_ref: str, request: Request, auth=Depends(authenticated)
 @router.post("/api/v1/demo")
 async def demo(request: Request, auth=Depends(authenticated)):
     instance = service(request)
-    result = instance.demo(auth[0]["user_id"])
+    result = await asyncio.to_thread(instance.demo, auth[0]["user_id"])
     await instance.market.load_verified_snapshot()
     result["market_data_mode"] = "real"
     result["market_frequency"] = "daily_published_nav"

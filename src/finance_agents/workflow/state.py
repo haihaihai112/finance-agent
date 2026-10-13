@@ -33,6 +33,7 @@ class WaitReason(StrEnum):
 
 class SessionState(Contract):
     run_id: str
+    parent_run_id: str | None = None
     user_id: str  # 可信服务端身份
     session_id: str
     intent: Intent | None = None

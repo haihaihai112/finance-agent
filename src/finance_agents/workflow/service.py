@@ -24,7 +24,8 @@ from finance_agents.storage.policy_store import PolicyStore
 from finance_agents.storage.runtime_store import RuntimeStore
 from finance_agents.tools.document_service import DocumentService
 from finance_agents.workflow.graph import build_graph
-from finance_agents.workflow.state import RunStatus, SessionState
+from finance_agents.workflow.locks import KeyedLocks
+from finance_agents.workflow.state import RunStatus, SessionState, WaitReason
 
 FORMS = {
     Intent.INVESTMENT: ("investment_profile", InvestmentProfile),
@@ -44,7 +45,9 @@ class WorkflowService:
         self.documents = DocumentStore(
             self.engine, settings.data_dir / "documents", settings.max_upload_bytes
         )
-        self.document_service = DocumentService(self.documents)
+        self.document_service = DocumentService(
+            self.documents, max_concurrency=settings.ocr_max_concurrency
+        )
         self.claims = ClaimsStore(self.engine)
         self.market = MarketStore(self.engine)
         self.policy = PolicyStore(self.engine)
@@ -67,10 +70,10 @@ class WorkflowService:
         )
         self.router = IntentRouterAgent(llm)
         self.optimizer = OutputOptimizerAgent(llm)
-        self.locks = {}
+        self.locks = KeyedLocks()
 
     def lock(self, key):
-        return self.locks.setdefault(key, asyncio.Lock())
+        return self.locks.hold(key)
 
     def response(self, state):
         profile = FORMS.get(state.intent)
@@ -79,12 +82,14 @@ class WorkflowService:
             form = profile[1]()
         facts = state.branch_result.structured_facts if state.branch_result else {}
         form_data = form.model_dump(mode="json") if form else {}
-        if "consent_ref" in form_data and not self.store.check_consent(
+        if form_data.get("consent_ref") and not self.store.check_consent(
             form_data["consent_ref"], state.user_id, state.run_id
         ):
             form_data["consent_ref"] = None
         return WorkflowResponse(
             run_id=state.run_id,
+            parent_run_id=state.parent_run_id,
+            document_ids=state.document_refs,
             intent=state.intent,
             status=state.status,
             state_version=state.state_version,
@@ -116,21 +121,24 @@ class WorkflowService:
                 return classes[name](mcp, self.document_service)
             return classes[name](mcp)
 
-        graph = build_graph(self.router, factory, self.optimizer, self.store.append_event)
+        pending_events = []
+        graph = build_graph(
+            self.router,
+            factory,
+            self.optimizer,
+            lambda run_id, kind, payload: pending_events.append((run_id, kind, payload)),
+        )
         result = await graph.ainvoke({"session": state})
+        for event in pending_events:
+            await asyncio.to_thread(self.store.append_event, *event)
         return result["session"]
 
     async def start(self, request, identity, token):
         if request.session_id != identity["session_id"]:
             raise PermissionError("提交的会话与凭据不一致")
-        self.check_documents(identity["user_id"], request.attachment_ids)
+        await asyncio.to_thread(self.check_documents, identity["user_id"], request.attachment_ids)
         intent = Intent(request.intent_hint) if request.intent_hint else None
         async with self.lock(("request", identity["user_id"], request.request_id)):
-            cached = self.store.begin_request(
-                identity["user_id"], request.request_id, "start:" + request.model_dump_json()
-            )
-            if cached is not None:
-                return WorkflowResponse.model_validate(cached)
             state = SessionState(
                 run_id=uuid4().hex,
                 **identity,
@@ -139,7 +147,14 @@ class WorkflowService:
                 intent=intent,
                 document_refs=request.attachment_ids,
             )
-            self.store.create_run(state)
+            cached = await asyncio.to_thread(
+                self.store.begin_run_request,
+                state,
+                request.request_id,
+                "start:" + request.model_dump_json(),
+            )
+            if cached is not None:
+                return WorkflowResponse.model_validate(cached)
             return await self.advance(state, token, request.request_id)
 
     async def advance(self, state, token, request_id):
@@ -149,23 +164,37 @@ class WorkflowService:
         except Exception:
             state.status = RunStatus.FAILED
             state.last_question = "执行异常，运行已保存；请查看服务端日志并新建请求。"
-            self.store.append_event(state.run_id, "execution_error", {"code": "EXECUTION_FAILED"})
+            await asyncio.to_thread(
+                self.store.append_event,
+                state.run_id,
+                "execution_error",
+                {"code": "EXECUTION_FAILED"},
+            )
             import logging
 
             logging.getLogger(__name__).exception("Workflow failed: %s", state.run_id)
-        self.store.save_run(state, version)
-        response = self.response(state)
-        self.store.finish_request(state.user_id, request_id, response.model_dump(mode="json"))
+        response = await asyncio.to_thread(
+            self.response, state.model_copy(update={"state_version": version + 1})
+        )
+        await asyncio.to_thread(
+            self.store.complete_run_request,
+            state,
+            request_id,
+            version,
+            response.model_dump(mode="json"),
+        )
         return response
 
     async def resume(self, run_id, request, identity, token):
         async with self.lock(("run", run_id)):
-            state = self.store.get_run(run_id, identity["user_id"])
+            state = await asyncio.to_thread(self.store.get_run, run_id, identity["user_id"])
             if state.session_id != identity["session_id"]:
                 raise PermissionError("运行不属于当前会话")
-            self.check_documents(state.user_id, request.attachment_ids)
+            await asyncio.to_thread(self.check_documents, state.user_id, request.attachment_ids)
             payload = "resume:" + run_id + ":" + request.model_dump_json()
-            cached = self.store.lookup_request(state.user_id, request.request_id, payload)
+            cached = await asyncio.to_thread(
+                self.store.lookup_request, state.user_id, request.request_id, payload
+            )
             if cached is not None:
                 return WorkflowResponse.model_validate(cached)
             if state.status != RunStatus.WAITING_USER:
@@ -188,9 +217,6 @@ class WorkflowService:
                     confirmed.add(name)
                 values["confirmed_fields"] = sorted(confirmed)
                 setattr(updated, attr, model.model_validate(values))
-            cached = self.store.begin_request(state.user_id, request.request_id, payload)
-            if cached is not None:
-                return WorkflowResponse.model_validate(cached)
             updated.message = request.message
             updated.document_refs = list(
                 dict.fromkeys(state.document_refs + request.attachment_ids)
@@ -198,14 +224,26 @@ class WorkflowService:
             reference = request.consent_ref or state.consent_ref
             updated.consent_ref = (
                 reference
-                if reference and self.store.check_consent(reference, state.user_id, run_id)
+                if reference
+                and await asyncio.to_thread(
+                    self.store.check_consent, reference, state.user_id, run_id
+                )
                 else None
             )
             if updated.credit_form:
                 updated.credit_form.consent_ref = updated.consent_ref
             updated.status = RunStatus.RUNNING
-            self.store.save_run(updated, state.state_version)
-            self.store.append_event(
+            cached = await asyncio.to_thread(
+                self.store.begin_run_request,
+                updated,
+                request.request_id,
+                payload,
+                state.state_version,
+            )
+            if cached is not None:
+                return WorkflowResponse.model_validate(cached)
+            await asyncio.to_thread(
+                self.store.append_event,
                 run_id,
                 "resume",
                 {
@@ -217,15 +255,65 @@ class WorkflowService:
 
     async def cancel(self, run_id, identity):
         async with self.lock(("run", run_id)):
-            state = self.store.get_run(run_id, identity["user_id"])
+            state = await asyncio.to_thread(self.store.get_run, run_id, identity["user_id"])
             if state.status == RunStatus.WAITING_USER:
                 version = state.state_version
                 state.status = RunStatus.CANCELLED
                 state.wait_reason = None
                 state.last_question = None
-                self.store.save_run(state, version)
-                self.store.append_event(run_id, "cancelled", {})
-            return self.response(state)
+                await asyncio.to_thread(self.store.save_run, state, version)
+                await asyncio.to_thread(self.store.append_event, run_id, "cancelled", {})
+            return await asyncio.to_thread(self.response, state)
+
+    async def copy_loan(self, run_id, request, identity):
+        async with self.lock(("request", identity["user_id"], request.request_id)):
+            parent = await asyncio.to_thread(self.store.get_run, run_id, identity["user_id"])
+            payload = "copy:" + run_id + ":" + request.model_dump_json()
+            cached = await asyncio.to_thread(
+                self.store.lookup_request, parent.user_id, request.request_id, payload
+            )
+            if cached is not None:
+                return WorkflowResponse.model_validate(cached)
+            ended = {RunStatus.COMPLETED, RunStatus.PARTIAL, RunStatus.FAILED, RunStatus.CANCELLED}
+            if parent.intent != Intent.LOAN or parent.status not in ended:
+                raise ValueError("仅可复制已结束的贷款运行")
+            await asyncio.to_thread(self.check_documents, parent.user_id, parent.document_refs)
+            copied = parent.model_copy(
+                deep=True,
+                update={
+                    "run_id": uuid4().hex,
+                    "parent_run_id": run_id,
+                    "session_id": identity["session_id"],
+                    "state_version": 1,
+                    "status": RunStatus.WAITING_USER,
+                    "wait_reason": WaitReason.CONFIRM_FORM,
+                    "pending_fields": ["confirmed_fields"],
+                    "consent_ref": None,
+                    "branch_result": None,
+                    "final_response": None,
+                    "last_question": "已复制贷款材料与字段值。请重新核对全部字段并授权本次模拟评估。",
+                    "message": "已复制贷款申请，请核对字段。",
+                },
+            )
+            for name, _ in FORMS.values():
+                form = getattr(copied, name)
+                if form is not None:
+                    form.confirmed_fields = []
+            if copied.credit_form is not None:
+                copied.credit_form.consent_ref = None
+            for field in copied.extracted_fields:
+                field.confirmed = False
+            response = await asyncio.to_thread(self.response, copied)
+            cached = await asyncio.to_thread(
+                self.store.begin_run_request,
+                copied,
+                request.request_id,
+                payload,
+                result=response.model_dump(mode="json"),
+            )
+            if cached is not None:
+                return WorkflowResponse.model_validate(cached)
+            return response
 
     def demo(self, user_id):
         import fitz

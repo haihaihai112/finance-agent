@@ -27,3 +27,7 @@ class ResumeRequest(Contract):
 
 class ConsentRequest(Contract):
     granted: bool
+
+
+class CopyRunRequest(Contract):
+    request_id: str = Field(min_length=1, max_length=128)

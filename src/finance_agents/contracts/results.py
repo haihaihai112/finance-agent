@@ -77,6 +77,8 @@ class FinalResponse(Contract):
 
 class WorkflowResponse(Contract):
     run_id: str
+    parent_run_id: str | None = None
+    document_ids: list[str] = Field(default_factory=list)
     intent: Intent | None = None
     status: str
     state_version: int

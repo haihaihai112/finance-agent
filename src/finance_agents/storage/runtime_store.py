@@ -43,6 +43,10 @@ requests = Table(
     Column("request_id", String(128), nullable=False),
     Column("payload_hash", String(64), nullable=False),
     Column("result", JSON),
+    Column("run_id", String(64)),
+    Column("status", String(32), nullable=False),
+    Column("created_at", DateTime, nullable=False),
+    Column("updated_at", DateTime, nullable=False),
     UniqueConstraint("user_id", "request_id", name="uq_runtime_request"),
 )
 events = Table(
@@ -64,6 +68,9 @@ class RuntimeStore:
     def __init__(self, engine):
         self.engine = engine
         metadata.create_all(engine)
+        from finance_agents.storage.runtime_migrations import migrate_runtime_requests
+
+        migrate_runtime_requests(engine)
 
     def create_session(self, lifetime=timedelta(hours=24)):
         token = secrets.token_urlsafe(32)
@@ -119,24 +126,27 @@ class RuntimeStore:
         return SessionState.model_validate(row["state"])
 
     def save_run(self, state: SessionState, expected_version: int):
+        with self.engine.begin() as connection:
+            self._save_run(connection, state, expected_version)
+        state.state_version = expected_version + 1
+
+    def _save_run(self, connection, state, expected_version):
         data = state.model_copy(update={"state_version": expected_version + 1}).model_dump(
             mode="json"
         )
-        with self.engine.begin() as connection:
-            result = connection.execute(
-                update(runs)
-                .where(
-                    and_(
-                        runs.c.run_id == state.run_id,
-                        runs.c.user_id == state.user_id,
-                        runs.c.version == expected_version,
-                    )
+        result = connection.execute(
+            update(runs)
+            .where(
+                and_(
+                    runs.c.run_id == state.run_id,
+                    runs.c.user_id == state.user_id,
+                    runs.c.version == expected_version,
                 )
-                .values(state=data, version=expected_version + 1)
             )
-            if result.rowcount != 1:
-                raise ValueError("运行版本冲突，请重新加载后提交")
-        state.state_version = expected_version + 1
+            .values(state=data, version=expected_version + 1)
+        )
+        if result.rowcount != 1:
+            raise ValueError("运行版本冲突，请重新加载后提交")
 
     def list_runs(self, user_id):
         with self.engine.connect() as connection:
@@ -213,6 +223,9 @@ class RuntimeStore:
                         request_id=request_id,
                         payload_hash=digest,
                         result=None,
+                        status="processing",
+                        created_at=utcnow(),
+                        updated_at=utcnow(),
                     )
                 )
             return None
@@ -232,6 +245,8 @@ class RuntimeStore:
                 )
             if row["payload_hash"] != digest:
                 raise ValueError("相同请求 ID 不能对应不同内容")
+            if row["status"] == "interrupted":
+                raise ValueError("请求已中断，不能自动重放外部工具")
             if row["result"] is None:
                 raise ValueError("请求正在处理或前次执行中断，请查询运行状态")
             return row["result"]
@@ -254,22 +269,189 @@ class RuntimeStore:
             return None
         if row["payload_hash"] != hashlib.sha256(payload.encode()).hexdigest():
             raise ValueError("相同请求 ID 不能对应不同内容")
+        if row["status"] == "interrupted":
+            raise ValueError("请求已中断，不能自动重放外部工具")
         if row["result"] is None:
             raise ValueError("请求正在处理或前次执行中断，请查询运行状态")
         return row["result"]
 
     def finish_request(self, user_id, request_id, result):
         with self.engine.begin() as connection:
-            connection.execute(
+            changed = connection.execute(
                 update(requests)
                 .where(
                     and_(
                         requests.c.user_id == user_id,
                         requests.c.request_id == request_id,
+                        requests.c.status == "processing",
                     )
                 )
-                .values(result=result)
+                .values(result=result, status="completed", updated_at=utcnow())
             )
+            if changed.rowcount != 1:
+                raise ValueError("请求已关闭，拒绝迟到结果")
+
+    def _request_filter(self, user_id, request_id):
+        return and_(requests.c.user_id == user_id, requests.c.request_id == request_id)
+
+    def begin_run_request(self, state, request_id, payload, expected_version=None, result=None):
+        """Reserve idempotency and persist the checkpoint in one transaction.
+
+        A tool-free copy supplies its final response here and commits directly
+        as completed, without exposing an intermediate processing checkpoint.
+        """
+        cached = self.lookup_request(state.user_id, request_id, payload)
+        if cached is not None:
+            return cached
+        try:
+            with self.engine.begin() as connection:
+                connection.execute(
+                    insert(requests).values(
+                        user_id=state.user_id,
+                        request_id=request_id,
+                        payload_hash=hashlib.sha256(payload.encode()).hexdigest(),
+                        run_id=state.run_id,
+                        status="completed" if result is not None else "processing",
+                        result=result,
+                        created_at=utcnow(),
+                        updated_at=utcnow(),
+                    )
+                )
+                if expected_version is None:
+                    connection.execute(
+                        insert(runs).values(
+                            run_id=state.run_id,
+                            user_id=state.user_id,
+                            version=state.state_version,
+                            state=state.model_dump(mode="json"),
+                        )
+                    )
+                else:
+                    self._save_run(connection, state, expected_version)
+        except IntegrityError:
+            # A concurrent registration may have won. Do not suppress unrelated errors.
+            cached = self.lookup_request(state.user_id, request_id, payload)
+            if cached is None:
+                raise
+            return cached
+        if expected_version is not None:
+            state.state_version = expected_version + 1
+        return None
+
+    def complete_run_request(self, state, request_id, expected_version, result):
+        """CAS state and close the still-active request atomically."""
+        with self.engine.begin() as connection:
+            # Consistent request -> run row locking also used by interruption.
+            active = connection.execute(
+                select(requests.c.status)
+                .where(
+                    self._request_filter(state.user_id, request_id),
+                    requests.c.run_id == state.run_id,
+                )
+                .with_for_update()
+            ).scalar_one_or_none()
+            if active != "processing":
+                raise ValueError("请求已关闭，拒绝迟到结果")
+            self._save_run(connection, state, expected_version)
+            changed = connection.execute(
+                update(requests)
+                .where(
+                    self._request_filter(state.user_id, request_id),
+                    requests.c.run_id == state.run_id,
+                    requests.c.status == "processing",
+                )
+                .values(result=result, status="completed", updated_at=utcnow())
+            )
+            if changed.rowcount != 1:
+                raise ValueError("请求已关闭，拒绝迟到结果")
+        state.state_version = expected_version + 1
+
+    def get_request(self, user_id, request_id):
+        with self.engine.connect() as connection:
+            row = (
+                connection.execute(
+                    select(
+                        requests.c.request_id,
+                        requests.c.run_id,
+                        requests.c.status,
+                        requests.c.created_at,
+                        requests.c.updated_at,
+                    ).where(self._request_filter(user_id, request_id))
+                )
+                .mappings()
+                .first()
+            )
+        if row is None:
+            raise LookupError("请求不存在")
+        return dict(row)
+
+    def interrupt_request(self, user_id, request_id):
+        from finance_agents.workflow.state import RunStatus
+
+        cutoff = utcnow() - timedelta(minutes=5)
+        with self.engine.begin() as connection:
+            row = (
+                connection.execute(
+                    select(requests).where(
+                        self._request_filter(user_id, request_id),
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                raise LookupError("请求不存在")
+            if row["status"] != "processing" or row["updated_at"] > cutoff:
+                raise ValueError("仅可关闭超过 5 分钟无更新的 processing 请求")
+            changed = connection.execute(
+                update(requests)
+                .where(
+                    self._request_filter(user_id, request_id),
+                    requests.c.status == "processing",
+                    requests.c.updated_at <= cutoff,
+                )
+                .values(status="interrupted", updated_at=utcnow())
+            )
+            if changed.rowcount != 1:
+                raise ValueError("请求状态已变化，请重新查询")
+            if row["run_id"] is not None:
+                saved = (
+                    connection.execute(
+                        select(runs).where(
+                            runs.c.run_id == row["run_id"],
+                            runs.c.user_id == user_id,
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+                state = SessionState.model_validate(saved["state"])
+                state.status = RunStatus.CANCELLED
+                state.wait_reason = None
+                state.pending_fields = []
+                state.last_question = "请求已人工关闭；外部工具不会自动重放。"
+                state.consent_ref = None
+                if state.credit_form:
+                    state.credit_form.consent_ref = None
+                self._save_run(connection, state, saved["version"])
+                connection.execute(
+                    update(consents)
+                    .where(
+                        consents.c.user_id == user_id,
+                        consents.c.run_id == state.run_id,
+                    )
+                    .values(active=False)
+                )
+                connection.execute(
+                    insert(events).values(
+                        event_id=secrets.token_hex(16),
+                        run_id=state.run_id,
+                        event_type="request_interrupted",
+                        created_at=utcnow(),
+                        payload={"request_id": request_id},
+                    )
+                )
+        return self.get_request(user_id, request_id)
 
     def append_event(self, run_id, event_type, payload):
         with self.engine.begin() as connection:
