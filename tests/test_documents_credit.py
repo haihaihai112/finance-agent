@@ -113,14 +113,14 @@ def test_document_store_validates_content_and_isolates_users(tmp_path):
 
 def test_text_pdf_uses_parser_and_service_cache(tmp_path):
     import fitz
-    from sqlalchemy import create_engine
+    from finance_agents.storage.database import create_database_engine
     from finance_agents.storage.document_store import DocumentStore
     from finance_agents.tools.document_service import DocumentService
     from finance_agents.tools.ocr import DocumentOCR
 
     pdf = fitz.open()
     pdf.new_page().insert_text((50, 50), "monthly_income: 8000 CNY")
-    store = DocumentStore(create_engine("sqlite://"), tmp_path)
+    store = DocumentStore(create_database_engine("sqlite:///:memory:"), tmp_path)
     info = store.save("u", "income.pdf", pdf.tobytes(), "application/pdf")
     service = DocumentService(store, DocumentOCR())
     first = asyncio.run(service.extract("u", info["document_id"]))
@@ -510,7 +510,7 @@ def test_new_document_reopens_confirmed_value_but_old_correction_remains_valid(
     tmp_path, kind, field_name
 ):
     import fitz
-    from sqlalchemy import create_engine
+    from finance_agents.storage.database import create_database_engine
     from finance_agents.agents.claim_intake import ClaimIntakeAgent
     from finance_agents.agents.credit_assessment import CreditAssessmentAgent
     from finance_agents.contracts.profiles import ClaimForm
@@ -518,7 +518,7 @@ def test_new_document_reopens_confirmed_value_but_old_correction_remains_valid(
     from finance_agents.tools.document_service import DocumentService
     from finance_agents.workflow.state import SessionState
 
-    store = DocumentStore(create_engine("sqlite://"), tmp_path)
+    store = DocumentStore(create_database_engine("sqlite:///:memory:"), tmp_path)
 
     def upload(amount):
         with fitz.open() as pdf:

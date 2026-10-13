@@ -6,12 +6,12 @@
 2. 项目目录运行 `docker compose up -d mysql`，然后 `docker compose ps` 确认healthy。
 3. `.env`填写 `DATABASE_URL=mysql+pymysql://finance:URL_ENCODED_PASSWORD@127.0.0.1:3306/finance_agents?charset=utf8mb4`。密码包含特殊字符时先URL编码。
 4. 重启API；模型和采集器使用同一DSN，MCP子进程通过环境配置连接同数据库。
-5. 设置专用测试数据库的`MYSQL_TEST_URL`后运行 `python -m pytest tests/test_mysql_integration.py -q`；此测试会创建演示记录，只用于测试库。
+5. 显式设置专用测试数据库的`MYSQL_TEST_URL`后运行 `.venv/Scripts/python.exe -m pytest tests/test_mysql_integration.py -q`；四项验收会创建并保留合成会话、演示保单与独立来源行情记录，只用于测试库，不读取`DATABASE_URL`作为测试库后备。覆盖HTTP贷款流程、真实stdio MCP、两线程竞争CAS、采集故障注入事务回滚；详见[资源与外部验收](resources-and-external-verification.md)。
 
 建表：`runtime_sessions/runs/requests/consents/events`保存会话、业务检查点、幂等、授权和审计；`uploaded_documents`存文件元数据与提取缓存；`claim_policy_history`存用户保单历史；`market_records/watermarks/revisions/ingestion_logs`存行情；`tax_policy_versions`与`tax_policy_source_observations`存审核规则与变化观测（带斜线的表名使用同一前缀，例如runtime_runs）。文件字节仍保存在`data/runtime/documents`，备份数据库时也应备份文件。
 
 停止：`docker compose stop mysql`；数据留在命名卷。没有默认删库脚本，不需要重置卷。
 
-当前主机Docker daemon未运行，MySQL真实连接尚未验证；SQLite、MySQL SQL分支与可选集成入口不等同于真实MySQL端到端验收。首版用`create_all`，后续正式修改表结构需Alembic迁移，不能用自动建表冒充迁移能力。
+2026-10-13 本机未配置`MYSQL_TEST_URL`，真实集成4项均跳过；当前主机Docker daemon未运行，MySQL真实连接尚未验证。SQLite、MySQL SQL分支与可选入口不等同于真实MySQL端到端验收。仓储首版使用`create_all`；本次请求字段增量迁移实现及其实际验证范围见`storage/runtime_migrations.py`和项目验收文档，不能将其称为通用生产迁移系统。
 
 已有脱敏保单可通过`ClaimsStore.put_policy(user_id, policy)`导入当前会话用户的历史记录。policy包含policy_id、policy_version、生效起止日期、data_mode=redacted、source_uri和已审核clauses（每条包含text、incident_types、excluded）。工作台显示服务端签发的user_id；这个导入是本地管理员数据准备操作，不是允许HTTP请求伪造身份。条款缺失时返回不可用；上传凭证不会自动生成历史保单或推测保障条款。

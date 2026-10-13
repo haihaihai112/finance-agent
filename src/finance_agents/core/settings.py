@@ -18,6 +18,7 @@ class Settings:
     llm_enabled: bool = True
     mcp_transport: str = "stdio"
     max_upload_bytes: int = 20 * 1024 * 1024
+    ocr_max_concurrency: int = 2
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -32,6 +33,7 @@ class Settings:
             deepseek_model=os.getenv("DEEPSEEK_MODEL", "deepseek-flash"),
             llm_enabled=os.getenv("LLM_ENABLED", "true").lower() == "true",
             mcp_transport=os.getenv("MCP_TRANSPORT", "stdio"),
+            ocr_max_concurrency=int(os.getenv("OCR_MAX_CONCURRENCY", "2")),
         )
 
     @property
