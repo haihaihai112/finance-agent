@@ -1,6 +1,7 @@
 """Synthetic transport checks; never count these as live-provider acceptance."""
 
 import importlib.util
+import asyncio
 import json
 from pathlib import Path
 import sys
@@ -90,3 +91,34 @@ def test_missing_key_remains_unverified_without_live_request(monkeypatch, capsys
     assert report["live_requests"] == []
     assert not live_requests
     assert all(row["passed"] for row in report["controlled_fallbacks"].values())
+
+
+@pytest.mark.parametrize("usage", ["malformed", ["total_tokens"], False, {"total_tokens": True}])
+def test_malformed_usage_is_recorded_without_uncaught_error(monkeypatch, usage):
+    verifier = load_verifier()
+    real_client = httpx.AsyncClient
+
+    def respond(request):
+        return httpx.Response(
+            200,
+            json={
+                "model": "intended-model",
+                "choices": [{"message": {"content": '{"intent":"loan","confidence":0.95}'}}],
+                "usage": usage,
+            },
+        )
+
+    def synthetic_client(**kwargs):
+        kwargs.setdefault("transport", httpx.MockTransport(respond))
+        return real_client(**kwargs)
+
+    monkeypatch.setattr(verifier.httpx, "AsyncClient", synthetic_client)
+    settings = Settings(deepseek_api_key="test-only", deepseek_model="intended-model")
+    report = asyncio.run(verifier.verify(settings, 1, 1))
+    if isinstance(usage, dict):
+        assert report["live_requests"][0]["status"] == "verified_configured_model"
+        assert "total_tokens" not in report["live_requests"][0]["usage"]
+        return
+    assert report["live_requests"][0]["status"] == "invalid_structured_response"
+    assert report["live_requests"][0]["usage"] is None
+    assert report["model_available"] is None

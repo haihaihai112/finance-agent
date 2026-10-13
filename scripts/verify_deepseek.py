@@ -88,7 +88,11 @@ async def verify(settings, calls, timeout):
                 decision = IntentDecision.model_validate_json(
                     payload["choices"][0]["message"]["content"]
                 )
-                usage = payload.get("usage") or {}
+                usage = payload.get("usage")
+                if usage is None:
+                    usage = {}
+                if not isinstance(usage, dict):
+                    raise ValueError("Usage metadata must be an object")
                 item["usage"] = {
                     key: usage[key]
                     for key in (
@@ -98,7 +102,7 @@ async def verify(settings, calls, timeout):
                         "prompt_cache_hit_tokens",
                         "prompt_cache_miss_tokens",
                     )
-                    if isinstance(usage.get(key), int)
+                    if type(usage.get(key)) is int
                 }
                 # Do not emit arbitrary provider strings or echoed response content.
                 item["endpoint_structured_response_valid"] = True
