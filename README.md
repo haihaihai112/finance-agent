@@ -12,10 +12,13 @@
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 Copy-Item .env.example .env
-.\.venv\Scripts\python.exe -m uvicorn finance_agents.api.app:app --host 127.0.0.1 --port 8000
+.\.venv\Scripts\python.exe scripts/doctor.py
+.\scripts\start.ps1
 ```
 
 打开 http://127.0.0.1:8000 查看工作台，http://127.0.0.1:8000/docs 查看接口；也可以选择 `.venv` 解释器后按 F5。`scripts/start.ps1` 提供同样的启动入口。退出服务按 Ctrl+C。
+
+启动脚本先检查诊断退出码，支持 `./scripts/start.ps1 -Port 8001`。VS Code 的“运行任务”中提供启动、离线诊断和代码验收任务，均使用项目 `.venv`。诊断支持 `--json` 和 `--port`；核心依赖、非法配置或占用端口为阻断项，`.env` 缺失、未配置 DeepSeek 与图片 OCR 未就绪分别显示为可选或未配置。诊断只检查本地文件、包和端口绑定，不下载模型、不写数据库、不探测外部服务，也不输出凭据；通过诊断不代表真实模型、MySQL或OCR推理已经验证。
 
 DeepSeek 密钥填入本地 `.env` 的 `DEEPSEEK_API_KEY`，不要提交密钥。无密钥时意图路由降级为规则，结果保持确定性输出。`DEEPSEEK_MODEL` 可配置，当前默认来自验证时官方文档的 `deepseek-flash`；模型名称与账号可用性请以你的接口为准。真实付费调用尚未验证。
 
@@ -61,6 +64,8 @@ OCR 并发默认上限为 2，可配置 `OCR_MAX_CONCURRENCY`；同材料并发�
 可用 `scripts/verify.ps1` 重复本地代码验收；正式浏览器脚本与复现步骤见 [浏览器验收](docs/browser-verification.md)。源码包用 `.venv/Scripts/python.exe scripts/package_source.py` 更新，仅包含源代码和交付文档。
 
 [架构](docs/architecture.md) · [项目简介与面试亮点](docs/project-highlights.md) · [工作台使用](docs/workbench-guide.md) · [验收记录](docs/verification.md)
+
+明日演示可按 [个人项目验收清单](docs/personal-project-acceptance.md) 依次检查五类业务、历史分页、事件、报告和请求异常恢复。工作台“历史运行”只读取当前用户的运行；JSON / Markdown 报告只在已有结果时导出，保留事实、引用及数据边界，不包含内部状态或授权。请求异常恢复按已保存的请求 ID 定位，不自动重复执行业务。🧾
 
 MySQL真实服务和 DeepSeek 真实密钥调用须在相应环境验证。当前不声称生产级金融准确性、OCR准确率、吞吐量或业务收益；真实／模拟模式与来源随结果保留。已建立本地 Git 仓库，当前分支为 `review-revisions`，密钥与运行数据不纳入版本控制。未创建、推送或发布 GitHub 仓库。
 
