@@ -31,21 +31,28 @@ def migrate_runtime_requests(engine):
         )
         # Let the dialect deserialize JSON. SQL NULL and JSON null both become
         # None, independently of database JSON-vs-string comparison semantics.
-        pending = (
-            connection.execute(select(legacy_requests).where(legacy_requests.c.status.is_(None)))
-            .mappings()
-            .all()
-        )
-        for row in pending:
-            connection.execute(
-                update(legacy_requests)
-                .where(
-                    legacy_requests.c.user_id == row["user_id"],
-                    legacy_requests.c.request_id == row["request_id"],
-                    legacy_requests.c.status.is_(None),
+        while True:
+            pending = (
+                connection.execute(
+                    select(legacy_requests).where(legacy_requests.c.status.is_(None)).limit(128)
                 )
-                .values(status="interrupted" if row["result"] is None else "completed")
+                .mappings()
+                .all()
             )
+            if not pending:
+                break
+            for row in pending:
+                connection.execute(
+                    update(legacy_requests)
+                    .where(
+                        legacy_requests.c.user_id == row["user_id"],
+                        legacy_requests.c.request_id == row["request_id"],
+                        legacy_requests.c.status.is_(None),
+                    )
+                    .values(status="interrupted" if row["result"] is None else "completed")
+                )
+            # Updated statuses remove this batch from the next query. Writers
+            # must remain stopped until the migration transaction completes.
         connection.execute(
             text(
                 "UPDATE runtime_requests SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL"

@@ -133,6 +133,71 @@ def test_resume_checkpoint_failure_does_not_consume_request(store):
     assert store.get_run("run", "user").state_version == 1
 
 
+def test_legacy_migration_decodes_bounded_batches_and_preserves_all_results(tmp_path):
+    import json
+
+    decoded_since_write = 0
+    decoded_batches = []
+
+    def deserialize(payload):
+        nonlocal decoded_since_write
+        decoded_since_write += 1
+        return json.loads(payload)
+
+    engine = create_engine(
+        "sqlite:///" + str(tmp_path / "many-old.db"), json_deserializer=deserialize
+    )
+    original = []
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE runtime_requests (user_id VARCHAR(64) NOT NULL, request_id VARCHAR(128) NOT NULL, payload_hash VARCHAR(64) NOT NULL, result JSON, UNIQUE(user_id, request_id))"
+            )
+        )
+        for index in range(301):
+            payload = (
+                None
+                if index % 3 == 0
+                else " null "
+                if index % 3 == 1
+                else json.dumps({"run_id": str(index), "evidence": "synthetic" * 32})
+            )
+            original.append((str(index), payload))
+        connection.execute(
+            text(
+                "INSERT INTO runtime_requests (user_id,request_id,payload_hash,result) VALUES ('u',:request_id,'hash',:result)"
+            ),
+            [{"request_id": key, "result": result} for key, result in original],
+        )
+
+    def observe_write(connection, cursor, statement, parameters, context, many):
+        nonlocal decoded_since_write
+        if statement.startswith("UPDATE runtime_requests") and decoded_since_write:
+            decoded_batches.append(decoded_since_write)
+            decoded_since_write = 0
+
+    event.listen(engine, "before_cursor_execute", observe_write)
+    RuntimeStore(engine)
+    event.remove(engine, "before_cursor_execute", observe_write)
+    assert len(decoded_batches) > 1
+    assert max(decoded_batches) <= 128
+    assert sum(decoded_batches) == 200
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text("SELECT request_id,result,status FROM runtime_requests")
+        ).all()
+    migrated = {row.request_id: (row.result, row.status) for row in rows}
+    assert len(migrated) == len(original)
+    for key, result in original:
+        assert migrated[key] == (result, "completed" if int(key) % 3 == 2 else "interrupted")
+    RuntimeStore(engine)
+    with engine.connect() as connection:
+        repeated = connection.execute(
+            text("SELECT request_id,result,status FROM runtime_requests")
+        ).all()
+    assert {row.request_id: (row.result, row.status) for row in repeated} == migrated
+
+
 def test_interrupted_request_cannot_be_replayed(store):
     value = state()
     store.begin_run_request(value, "request", "payload")
