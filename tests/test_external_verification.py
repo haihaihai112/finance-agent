@@ -1,7 +1,6 @@
 """Synthetic transport checks; never count these as live-provider acceptance."""
 
 import importlib.util
-import asyncio
 import json
 from pathlib import Path
 import sys
@@ -94,7 +93,7 @@ def test_missing_key_remains_unverified_without_live_request(monkeypatch, capsys
 
 
 @pytest.mark.parametrize("usage", ["malformed", ["total_tokens"], False, {"total_tokens": True}])
-def test_malformed_usage_is_recorded_without_uncaught_error(monkeypatch, usage):
+def test_malformed_usage_preserves_content_facts_and_fails_acceptance(monkeypatch, capsys, usage):
     verifier = load_verifier()
     real_client = httpx.AsyncClient
 
@@ -114,11 +113,20 @@ def test_malformed_usage_is_recorded_without_uncaught_error(monkeypatch, usage):
 
     monkeypatch.setattr(verifier.httpx, "AsyncClient", synthetic_client)
     settings = Settings(deepseek_api_key="test-only", deepseek_model="intended-model")
-    report = asyncio.run(verifier.verify(settings, 1, 1))
+    monkeypatch.setattr(verifier.Settings, "from_env", lambda: settings)
+    monkeypatch.setattr(sys, "argv", ["verify_deepseek.py", "--calls", "1"])
+    assert verifier.main() == (0 if isinstance(usage, dict) else 1)
+    report = json.loads(capsys.readouterr().out)
+    assert report["live_requests"][0]["endpoint_structured_response_valid"] is True
+    assert report["live_requests"][0]["intent"] == "loan"
+    assert report["live_requests"][0]["returned_model_matches_config"] is True
+    assert report["live_requests"][0]["model_available"] is True
+    assert report["model_available"] is True
+    assert report["cost"] is None
     if isinstance(usage, dict):
         assert report["live_requests"][0]["status"] == "verified_configured_model"
         assert "total_tokens" not in report["live_requests"][0]["usage"]
         return
-    assert report["live_requests"][0]["status"] == "invalid_structured_response"
+    assert report["live_requests"][0]["status"] == "invalid_usage_metadata"
     assert report["live_requests"][0]["usage"] is None
-    assert report["model_available"] is None
+    assert report["live_status"] == "acceptance_failed"

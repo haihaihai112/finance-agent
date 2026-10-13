@@ -58,3 +58,5 @@
 缺少密钥时 `live_status=unverified_missing_key`、`live_requests=[]`、`model_available=null`。配置的模型名称不能视为实际支持证据；只有实际请求获得有效结构化响应且返回模型名称与配置完全匹配时，才记 `status=verified_configured_model` 和模型可用。端点结构化响应有效单独记为 `endpoint_structured_response_valid=true`；模型名称缺失或不匹配时分别记 `structured_response_model_missing` / `structured_response_model_mismatch`，配置模型可用性保持未知，实际调用验收退出码为1。实际 HTTP、超时、网络及结构化响应错误分别记录，不透露错误正文。没有经过核验的单价时 `cost=null`，不根据 token 数猜测费用。本次密钥不存在，实际模型、耗时、usage 和费用均未验证。
 
 依赖警告：当前 FastAPI/Starlette TestClient 的 httpx 兼容弃用警告和 PyMuPDF 的 fitz 名称弃用警告均来自已安装依赖；不将警告称为业务测试失败。
+
+如果意图 JSON 已通过契约解析，但 `usage` 是字符串、列表或布尔值等非对象，记录 `status=invalid_usage_metadata`、`live_status=acceptance_failed`，整体验收退出码为1，`usage=null`、费用未知；已建立的 `endpoint_structured_response_valid`、意图与模型匹配事实仍保留。只有模型名称匹配时可保留 `model_available=true`，这不等于整体验收通过；模型缺失或不匹配仍为未知。合成 transport 对这些诊断路径的测试不证明真实服务返回过该异常。

@@ -88,22 +88,6 @@ async def verify(settings, calls, timeout):
                 decision = IntentDecision.model_validate_json(
                     payload["choices"][0]["message"]["content"]
                 )
-                usage = payload.get("usage")
-                if usage is None:
-                    usage = {}
-                if not isinstance(usage, dict):
-                    raise ValueError("Usage metadata must be an object")
-                item["usage"] = {
-                    key: usage[key]
-                    for key in (
-                        "prompt_tokens",
-                        "completion_tokens",
-                        "total_tokens",
-                        "prompt_cache_hit_tokens",
-                        "prompt_cache_miss_tokens",
-                    )
-                    if type(usage.get(key)) is int
-                }
                 # Do not emit arbitrary provider strings or echoed response content.
                 item["endpoint_structured_response_valid"] = True
                 item["returned_model_matches_config"] = (
@@ -117,6 +101,25 @@ async def verify(settings, calls, timeout):
                 else:
                     item["status"] = "structured_response_model_mismatch"
                 item["intent"] = decision.intent.value if decision.intent else None
+                usage = payload.get("usage")
+                if usage is None:
+                    usage = {}
+                if not isinstance(usage, dict):
+                    # Valid content/model observations stand independently of
+                    # malformed token metadata; whole acceptance still fails.
+                    item["status"] = "invalid_usage_metadata"
+                else:
+                    item["usage"] = {
+                        key: usage[key]
+                        for key in (
+                            "prompt_tokens",
+                            "completion_tokens",
+                            "total_tokens",
+                            "prompt_cache_hit_tokens",
+                            "prompt_cache_miss_tokens",
+                        )
+                        if type(usage.get(key)) is int
+                    }
             except httpx.TimeoutException:
                 item["status"] = "timeout"
             except httpx.HTTPStatusError:
@@ -136,6 +139,8 @@ async def verify(settings, calls, timeout):
         if all(r["status"] == "verified_configured_model" for r in report["live_requests"])
         else "unverified_configured_model"
     )
+    if any(r["status"] == "invalid_usage_metadata" for r in report["live_requests"]):
+        report["live_status"] = "acceptance_failed"
     return report
 
 
