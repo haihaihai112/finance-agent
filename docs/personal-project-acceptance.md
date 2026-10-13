@@ -45,7 +45,7 @@ Copy-Item .env.example .env
 
 ## 数据与外部验证限制
 
-日频净值只覆盖受控公开基金/ETF来源。演示快照截至2026-10-13，来源、采集时间和新鲜度应以实际返回为准。更新可运行`python -m finance_agents.data_jobs.scheduler market --instruments 510300`；这是联网采集，非离线诊断。接口失败不能补造价格。政策为官方年度综合所得规则，网页变化只进入人工审核，不自动成为新法。来源证据见 [data-source-validation.md](data-source-validation.md)。
+日频净值只覆盖受控公开基金/ETF来源。演示快照截至2026-10-13，来源、采集时间和新鲜度应以实际返回为准。更新可运行`.\.venv\Scripts\python.exe -m finance_agents.data_jobs.scheduler market --instruments 510300`；这是联网采集，非离线诊断。接口失败不能补造价格。政策为官方年度综合所得规则，网页变化只进入人工审核，不自动成为新法。来源证据见 [data-source-validation.md](data-source-validation.md)。
 
 保单与信贷演示明确mock；公开来源real、脱敏来源redacted不等于业务审批已经真实完成。本地会话非企业SSO，运行数据保存在服务端，关闭标签页不删除数据。多进程使用数据库版本控制，不承诺生产容量。
 

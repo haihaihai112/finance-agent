@@ -79,19 +79,33 @@ def diagnose(
             "核心依赖已定位" if available(name) else '缺少核心依赖；请安装 pip install -e ".[dev]"',
         )
     env_file = root / ".env"
+    process_environment = dict(os.environ if environment is None else environment)
     config = {}
     if env_file.is_file():
         try:
-            # Match application dotenv parsing, but do not mutate the process environment.
+            # load_dotenv(override=False) resolves references in file order, with
+            # process values taking precedence over preceding file assignments.
+            # Reuse dotenv's atom parser without touching os.environ.
             from dotenv import dotenv_values
+            from dotenv.variables import parse_variables
 
-            config = dict(dotenv_values(env_file, interpolate=False))
+            resolved = {}
+            for name, value in dotenv_values(env_file, interpolate=False).items():
+                if value is None:
+                    resolved[name] = None
+                else:
+                    interpolation_environment = {**resolved, **process_environment}
+                    resolved[name] = "".join(
+                        atom.resolve(interpolation_environment) for atom in parse_variables(value)
+                    )
+            # Bare keys without '=' are not added to os.environ by load_dotenv.
+            config = {name: value for name, value in resolved.items() if value is not None}
             add("env", "ok", ".env 存在；不显示内容")
         except Exception:
             add("env", "blocking", ".env 无法读取；错误详情隐藏以避免泄露配置")
     else:
         add("env", "optional", ".env 不存在；默认 SQLite / 规则模式可运行")
-    config.update(os.environ if environment is None else environment)
+    config.update(process_environment)
     database = config.get("DATABASE_URL") or ""
     mode = (
         "MySQL"
@@ -112,7 +126,7 @@ def diagnose(
         "optional" if configured else "unconfigured",
         "已配置但未验证真实调用" if configured else "使用规则降级；真实调用未验证",
     )
-    transport = config.get("MCP_TRANSPORT") or "stdio"
+    transport = config.get("MCP_TRANSPORT", "stdio")
     add(
         "mcp",
         "ok" if transport in {"stdio", "inprocess"} else "blocking",
