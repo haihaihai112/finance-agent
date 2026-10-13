@@ -1,0 +1,15 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "启动金融多智能体工作台",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["finance_agents.api.app:app", "--host", "127.0.0.1", "--port", "8000"],
+      "cwd": "${workspaceFolder}",
+      "env": {"PYTHONPATH": "${workspaceFolder}/src"},
+      "console": "integratedTerminal"
+    }
+  ]
+}

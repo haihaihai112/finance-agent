@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>金融多智能体 · 工作台</title>
+  <link rel="stylesheet" href="/web/styles.css">
+  <script src="/web/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div><span class="eyebrow">FINANCE AGENTS / PERSONAL PROJECT</span><h1>金融多智能体工作台</h1></div>
+    <div class="system"><span class="status-dot" id="health-dot"></span><span id="health-label">正在检查服务</span><button id="health-refresh" class="quiet" type="button">刷新状态</button></div>
+  </header>
+  <div class="context-strip"><span>6 Agent · 4 MCP</span><span>大陆 / CNY · 基金与 ETF</span><span>居民年度综合所得收入额</span><span>征信：模拟评估</span></div>
+  <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+  <main class="workspace">
+    <aside class="sidebar">
+      <section class="panel">
+        <div class="section-head"><h2>会话</h2><span class="step">01</span></div>
+        <p class="help">身份由服务端建立。Token 仅保存在本标签页的 sessionStorage。</p>
+        <dl class="metadata"><dt>会话</dt><dd id="session-id">尚未建立</dd><dt>用户</dt><dd id="user-id">—</dd></dl>
+        <button id="create-session" class="primary" type="button">建立新会话</button>
+        <details class="token-box"><summary>恢复已有会话</summary>
+          <label for="restore-session-id">会话 ID</label><input id="restore-session-id" autocomplete="off">
+          <label for="restore-token">Bearer Token</label><input id="restore-token" type="password" autocomplete="off">
+          <button id="restore-session" type="button">使用已有会话</button>
+          <p class="help">请仅使用属于自己的会话凭据。</p>
+        </details>
+        <button id="forget-session" class="quiet" type="button">清除此标签页会话</button>
+      </section>
+      <section class="panel">
+        <div class="section-head"><h2>资料上传</h2><span class="step">02</span></div>
+        <p class="help">理赔上传保单或事故单据；贷款支持多份收入、负债材料。上传后逐项核对提取证据。</p>
+        <form id="upload-form"><label class="upload-zone" for="files">选择 PDF、PNG 或 JPEG<input id="files" type="file" multiple accept=".pdf,.png,.jpg,.jpeg"></label><button id="upload-button" type="submit">上传并提取</button></form>
+        <p class="help">支持格式和 OCR 能力以服务端返回为准。材料不会保存在浏览器本地存储。</p>
+        <ul id="document-list" class="document-list"><li class="empty">暂无资料</li></ul>
+        <details class="demo-box"><summary>演示资料</summary><p class="help">仅在点击后创建模拟样本与保单。演示资料不代表真实业务数据。</p><button id="create-demo" type="button">创建本会话演示样本</button><div id="demo-result"></div></details>
+      </section>
+      <section class="panel service-panel"><h2>服务模式</h2><div id="service-details" class="help">等待健康检查。</div><p class="help">DeepSeek 配置在服务端。未配置 Key 时使用规则处理；工具异常会明确显示。</p></section>
+    </aside>
+    <section class="main-column">
+      <section class="panel composer">
+        <div class="section-head"><h2>选择业务并描述问题</h2><span class="step">03</span></div>
+        <div class="intent-grid" id="intent-options" role="group" aria-label="识别模式与五类业务入口">
+          <button type="button" class="intent active" data-intent="auto" aria-pressed="true">自动识别</button>
+          <button type="button" class="intent" data-intent="investment" aria-pressed="false">投资咨询</button>
+          <button type="button" class="intent" data-intent="claim" aria-pressed="false">理赔申请</button>
+          <button type="button" class="intent" data-intent="loan" aria-pressed="false">贷款申请</button>
+          <button type="button" class="intent" data-intent="policy_tax" aria-pressed="false">政策 / 税务</button>
+          <button type="button" class="intent" data-intent="other" aria-pressed="false">其他</button>
+        </div>
+        <p id="intent-description" class="help"></p>
+        <div id="chat-log" class="chat-log" aria-live="polite"><p class="empty">建立会话后，可发起一条业务流程。系统会先追问缺失信息。</p></div>
+        <form id="query-form"><label for="message">业务说明 / 补答</label><textarea id="message" rows="4" maxlength="10000" placeholder="用自然语言描述目标、已知信息和需要解决的问题。"></textarea><div class="action-row"><span id="attachment-summary" class="help">未附加资料</span><button id="send-query" class="primary" type="submit">发起业务</button></div></form>
+        <p class="help">运行等待中时，此处发送补答；表单字段请在下方逐项确认。提交前请核对资料和金额单位。</p>
+        <button id="new-business" class="quiet" type="button" hidden>结束当前编辑，发起另一条业务</button>
+      </section>
+      <section id="extraction-panel" class="panel" hidden><div class="section-head"><h2>材料提取证据</h2><span class="pill neutral">待核对</span></div><p class="help">置信度由解析工具返回，并非真实准确率。原文、页码、坐标用于核对；修改表单值不会改写原始证据。</p><div id="extractions"></div></section>
+      <section id="form-panel" class="panel" hidden>
+        <div class="section-head"><h2 id="form-title">业务表单</h2><span class="step">04</span></div>
+        <p id="run-question" class="question"></p>
+        <div id="pending-fields" class="pending"></div><div id="conflicts" class="conflicts" hidden></div>
+        <p id="form-instructions" class="help">金额单位为元（CNY）；请显式填写。每个已填写字段需单独勾选确认，编辑后须重新确认。</p>
+        <form id="business-form"><div id="business-fields" class="fields-grid"></div><div class="action-row"><span id="confirmation-summary" class="help"></span><button id="confirm-resume" class="primary" type="submit">提交已确认字段并继续</button></div></form>
+        <details class="advanced"><summary>高级：查看本次返回结构</summary><pre id="raw-response"></pre></details>
+      </section>
+      <section id="consent-panel" class="panel consent-panel" hidden><h3>模拟征信 / 风控授权</h3><p>授权此运行使用已确认的结构化贷款表单调用模拟征信与风控服务。表单确认不等于授权；授权只对当前运行生效。</p><div class="action-row"><button id="grant-consent" type="button">明确授权本次模拟评估</button><button id="revoke-consent" class="danger" type="button" hidden>撤销授权</button></div><p id="consent-status" class="help">尚未授权</p></section>
+      <section id="result-panel" class="panel" hidden><div class="section-head"><h2>处理结果</h2><span id="data-mode" class="pill"></span></div><p id="conclusion" class="conclusion"></p><h3>事实与计算</h3><div id="result-facts"></div><h3>来源与引用</h3><div id="citations"></div><h3>限制与下一步</h3><ul id="limitations"></ul><p id="next-action"></p></section>
+    </section>
+    <aside class="run-column">
+      <section class="panel"><div class="section-head"><h2>运行状态</h2><span class="step">05</span></div><dl class="metadata"><dt>运行 ID</dt><dd id="run-id">尚未发起</dd><dt>业务</dt><dd id="run-intent">待识别</dd><dt>版本</dt><dd id="run-version">—</dd><dt>状态</dt><dd id="run-status">—</dd><dt>等待原因</dt><dd id="wait-reason">—</dd></dl><button id="refresh-run" type="button" disabled>刷新当前运行</button><details><summary>按运行 ID 恢复</summary><label for="restore-run-id">运行 ID</label><input id="restore-run-id" autocomplete="off"><button id="restore-run" type="button">读取并恢复</button></details><p class="help">恢复读取最新版本。发生版本冲突时停止提交，请刷新后重新核对。</p></section>
+      <section class="panel"><h2>操作顺序</h2><ol class="workflow-steps"><li>建立会话</li><li>上传所需资料</li><li>发起业务、回答追问</li><li>核对并确认表单</li><li>贷款另行明确授权</li><li>查看结果及引用</li></ol><p class="help">real：真实来源<br>redacted：脱敏来源<br>mock：模拟数据</p></section>
+    </aside>
+  </main>
+  <footer>个人项目 · 结果须结合来源、适用条件与数据模式评估。服务端负责鉴权、规则计算和六 Agent / 四 MCP 工作流。</footer>
+</body>
+</html>
