@@ -1,4 +1,4 @@
-param([string]$Python = '')
+﻿param([string]$Python = '')
 $ErrorActionPreference = 'Stop'
 $projectPath = Split-Path -Parent $PSScriptRoot
 if (!$Python) { $Python = Join-Path $projectPath '.venv/Scripts/python.exe' }

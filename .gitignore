@@ -16,3 +16,26 @@ data/*
 .superpowers/
 tests/browser/artifacts/
 
+
+# Publication: private configuration and generated runtime files
+.env
+.env.*
+!.env.example
+.venv/
+node_modules/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+runtime*/
+work/
+.superpowers/
+*.db
+*.sqlite*
+*.log
+reports/*.xml
+reports/**/*.xml
+Agent.md
