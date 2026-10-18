@@ -103,10 +103,10 @@ def test_copy_preserves_values_evidence_and_parent_but_clears_every_confirmation
     [
         (RunStatus.WAITING_USER, Intent.LOAN),
         (RunStatus.RUNNING, Intent.LOAN),
-        (RunStatus.COMPLETED, Intent.CLAIM),
+        (RunStatus.COMPLETED, Intent.OTHER),
     ],
 )
-def test_only_ended_loan_can_be_copied(loan, status, intent):
+def test_only_ended_financial_business_can_be_copied(loan, status, intent):
     client, headers, old, _ = loan
     service = client.app.state.service
     old.status, old.intent = status, intent
@@ -118,6 +118,37 @@ def test_only_ended_loan_can_be_copied(loan, status, intent):
         == 409
     )
     assert len(service.store.list_runs(old.user_id)) == 1
+
+
+@pytest.mark.parametrize("intent", [Intent.INVESTMENT, Intent.CLAIM, Intent.POLICY_TAX])
+def test_copy_other_business_preserves_parent_and_requires_reconfirmation(
+    loan, intent, monkeypatch
+):
+    client, headers, old, _ = loan
+    service = client.app.state.service
+    from finance_agents.workflow.service import FORMS
+
+    old.intent = intent
+    attr, model = FORMS[intent]
+    setattr(old, attr, model(jurisdiction="CN") if intent != Intent.CLAIM else model(policy_id="P"))
+    getattr(old, attr).confirmed_fields = [
+        "policy_id" if intent == Intent.CLAIM else "jurisdiction"
+    ]
+    service.store.save_run(old, old.state_version)
+
+    async def forbidden(*args):
+        pytest.fail("Copy cannot execute external tools")
+
+    monkeypatch.setattr(service, "execute", forbidden)
+    response = client.post("/api/v1/runs/old/copy", headers=headers, json={"request_id": "copy"})
+    assert response.status_code == 200, response.text
+    copied = response.json()
+    assert copied["intent"] == intent
+    assert copied["form"]["confirmed_fields"] == []
+    assert copied["status"] == "waiting_user"
+    assert copied["result"] is None
+    assert copied["parent_run_id"] == old.run_id
+    assert service.store.get_run("old", old.user_id) == old
 
 
 @pytest.mark.parametrize("transport", ["inprocess", "stdio"])

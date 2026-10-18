@@ -86,5 +86,6 @@ class WorkflowResponse(Contract):
     pending_fields: list[str] = Field(default_factory=list)
     question: str | None = None
     form: dict[str, Any] = Field(default_factory=dict)
+    field_hints: dict[str, dict[str, Any]] = Field(default_factory=dict)
     conflicts: dict[str, Any] = Field(default_factory=dict)
     result: FinalResponse | None = None

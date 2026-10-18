@@ -1,5 +1,6 @@
 /* Four controlled display fixtures + real HTTP loan copy / consent / reassessment. */
 "use strict";
+const {reveal, click, fill}=require("./ui-controls.cjs");
 const assert = require("node:assert/strict");
 const path = require("node:path");
 const fs = require("node:fs/promises");
@@ -16,16 +17,17 @@ async function screenshot(page, name) {
 async function settled(page) { await page.locator("#send-query").waitFor({state:"visible"}); await page.waitForFunction(() => !document.getElementById("send-query").disabled); }
 async function restore(page, id) {
   await page.locator("#restore-run-id").evaluate(el => el.closest("details").open = true);
-  await page.locator("#restore-run-id").fill(id);
-  await page.locator("#restore-run").click();
+  await fill(page,"#restore-run-id",id);
+  await click(page,"#restore-run");
   await settled(page);
   assert.equal(await page.locator("#run-id").textContent(), id);
+  await click(page,"#close-tools");
 }
 async function fixtureCases(browser) {
   const context = await browser.newContext();
   const page = await context.newPage();
   await page.goto(baseURL);
-  await page.locator("#create-session").click(); await settled(page);
+  await click(page,"#create-session"); await settled(page);
   const fixtures = [
     ["potentially_covered", "可能符合条款，需机构审核", true],
     ["outside_coverage_dates", "出险日期不在保障期内", false],
@@ -74,14 +76,14 @@ async function restoreFailureFixtures(browser) {
       return route.fulfill({json:runs[id]});
     });
     await page.goto(baseURL);
-    await page.locator("#create-session").click(); await settled(page);
+    await click(page,"#create-session"); await settled(page);
     await restore(page, "fixture-A");
     assert.match(await page.locator("#document-list").textContent(), /doc-A/);
-    await page.locator("#restore-run-id").fill("fixture-B");
-    await page.locator("#restore-run").click(); await settled(page);
+    await fill(page,"#restore-run-id","fixture-B");
+    await click(page,"#restore-run"); await settled(page);
     assert.match(await page.locator("#notice").textContent(), /controlled .* failure/);
-    await page.locator("#message").fill("恢复失败后的补答");
-    await page.locator("#send-query").click(); await settled(page);
+    await fill(page,"#message","恢复失败后的补答");
+    await click(page,"#send-query"); await settled(page);
     // Atomic recovery may retain A; it must never submit A's attachment to B.
     assert.deepEqual(resumes.map(item => [item.id, item.body.attachment_ids]), [["fixture-A", ["doc-A"]]]);
     assert.equal(await page.locator("#run-id").textContent(), "fixture-A");
@@ -96,13 +98,13 @@ async function realLoan(browser) {
   const page = await context.newPage();
   const pageErrors = []; page.on("pageerror", error => pageErrors.push(error.message));
   await page.goto(baseURL);
-  await page.locator("#create-session").click(); await settled(page);
+  await click(page,"#create-session"); await settled(page);
   await page.locator("#create-demo").evaluate(el => el.closest("details").open = true);
-  await page.locator("#create-demo").click(); await settled(page);
+  await click(page,"#create-demo"); await settled(page);
   await page.locator("#document-list li").nth(1).locator("input[type=checkbox]").check();
   await page.locator('[data-intent="loan"]').click();
-  await page.locator("#message").fill("申请贷款，请提取演示材料");
-  await page.locator("#send-query").click(); await settled(page);
+  await fill(page,"#message","申请贷款，请提取演示材料");
+  await click(page,"#send-query"); await settled(page);
   const firstId = await page.locator("#run-id").textContent();
   const identity = await page.evaluate(() => JSON.parse(sessionStorage.getItem("finance-workbench-session-v1")).session);
   const api = async (endpoint, body) => {
@@ -116,17 +118,17 @@ async function realLoan(browser) {
       if ((await field.locator("input:not([type=checkbox]),select").inputValue()).trim()) await field.locator("input[type=checkbox]").check();
     }
   };
-  await page.locator("#field-subject_ref").fill("browser-synthetic-subject");
-  await page.locator("#field-requested_amount").fill("12000");
-  await page.locator("#field-loan_term_months").fill("12");
-  await page.locator("#field-monthly_income").fill("8000");
-  await page.locator("#field-monthly_debt_payment").fill("1000");
-  await page.locator("#field-employment_status").fill("自由职业");
+  await fill(page,"#field-subject_ref","browser-synthetic-subject");
+  await fill(page,"#field-requested_amount","12000");
+  await fill(page,"#field-loan_term_months","12");
+  await fill(page,"#field-monthly_income","8000");
+  await fill(page,"#field-monthly_debt_payment","1000");
+  await fill(page,"#field-employment_status","自由职业");
   await confirmFilled();
-  await page.locator("#confirm-resume").click(); await settled(page);
+  await click(page,"#confirm-resume"); await settled(page);
   assert.equal(await page.locator("#wait-reason").textContent(), "授权");
-  await page.locator("#grant-consent").click(); await settled(page);
-  await page.locator("#confirm-resume").click(); await settled(page);
+  await click(page,"#grant-consent"); await settled(page);
+  await click(page,"#continue-assessment"); await settled(page);
   const historical = await api(`/api/v1/runs/${firstId}`);
   assert.equal(historical.status, "completed");
   assert.ok(historical.form.consent_ref);
@@ -134,7 +136,7 @@ async function realLoan(browser) {
   const originalExtraction = await api(`/api/v1/documents/${historical.document_ids[0]}/extraction`);
   await page.reload(); await settled(page);
   assert.equal(await page.locator("#run-id").textContent(), firstId);
-  await page.locator("#copy-loan").click(); await settled(page);
+  await click(page,"#copy-loan"); await settled(page);
   const copiedId = await page.locator("#run-id").textContent();
   assert.notEqual(copiedId, firstId);
   const copied = await api(`/api/v1/runs/${copiedId}`);
@@ -148,27 +150,27 @@ async function realLoan(browser) {
   assert.ok(await page.locator("#document-list").textContent());
   assert.ok(await page.locator("#extractions .evidence-field").count());
   assert.deepEqual(await api(`/api/v1/documents/${copied.document_ids[0]}/extraction`), originalExtraction);
-  await page.locator("#confirm-resume").click(); await settled(page);
+  await click(page,"#confirm-resume"); await settled(page);
   assert.match(await page.locator("#notice").textContent(), /核对并勾选/);
   assert.deepEqual(await api(`/api/v1/runs/${copiedId}`), copied);
-  await page.locator("#field-requested_amount").fill("24000");
-  await page.locator("#field-loan_term_months").fill("24");
+  await fill(page,"#field-requested_amount","24000");
+  await fill(page,"#field-loan_term_months","24");
   await confirmFilled();
-  await page.locator("#confirm-resume").click(); await settled(page);
+  await click(page,"#confirm-resume"); await settled(page);
   const awaiting = await api(`/api/v1/runs/${copiedId}`);
   assert.equal(awaiting.wait_reason, "consent");
   assert.equal(awaiting.result, null);
   assert.equal(awaiting.form.requested_amount.amount, "24000");
   assert.equal(awaiting.form.loan_term_months, 24);
-  await page.locator("#grant-consent").click(); await settled(page);
-  await page.locator("#confirm-resume").click(); await settled(page);
+  await click(page,"#grant-consent"); await settled(page);
+  await click(page,"#continue-assessment"); await settled(page);
   const finished = await api(`/api/v1/runs/${copiedId}`);
   assert.equal(finished.status, "completed");
   assert.notEqual(finished.form.consent_ref, historical.form.consent_ref);
   assert.equal(finished.result.facts.structured_facts.assessment.table_row.requested_amount, "24000");
   assert.deepEqual(await api(`/api/v1/runs/${firstId}`), historical);
   await screenshot(page, "loan-copy-reauthorized");
-  await page.locator("#read-parent-run").click(); await settled(page);
+  await click(page,"#read-parent-run"); await settled(page);
   assert.equal(await page.locator("#run-id").textContent(), firstId);
   assert.equal(await page.locator("#conclusion").textContent(), historical.result.conclusion);
   assert.deepEqual(pageErrors, []);

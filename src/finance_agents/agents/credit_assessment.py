@@ -1,4 +1,4 @@
-"""Document-backed credit intake, explicit confirmation and consent gates."""
+"""Explicit document or self-reported credit intake, confirmation and consent gates."""
 
 from datetime import datetime, timezone
 
@@ -16,28 +16,46 @@ class CreditAssessmentAgent:
         self.mcp, self.document_service = mcp, document_service
 
     async def run(self, state: SessionState) -> AgentResult:
+        intake_mode = state.credit_form.intake_mode if state.credit_form else "documents"
+        self_reported = intake_mode == "self_reported"
+        provenance = "自填、未经材料核验" if self_reported else "用户上传材料与确认字段"
+        mode_warnings = (
+            ["自填、未经材料核验；仅供模拟试算，不代表真实征信或银行审批。"]
+            if self_reported
+            else []
+        )
+
+        def describe(message):
+            return f"自填、未经材料核验。{message}" if self_reported else message
+
         def waiting(message, missing, form=None, conflicts=None, warnings=None):
             return AgentResult(
                 agent_type="credit_assessment",
                 status=ResultStatus.NEEDS_INPUT,
                 data_mode=DataMode.MOCK,
-                summary=message,
+                summary=describe(message),
                 missing_fields=missing,
                 structured_facts={
                     "form": form.model_dump(mode="json") if form else {},
                     "conflicts": conflicts or {},
+                    "intake_mode": intake_mode,
+                    "data_provenance": provenance,
                 },
-                next_action=message,
-                warnings=warnings or [],
+                next_action=describe(message),
+                warnings=mode_warnings + (warnings or []),
             )
 
-        if not state.document_refs:
-            return waiting("请上传收入、负债等贷款材料（PDF、PNG 或 JPEG）。", ["document_refs"])
+        if not self_reported and not state.document_refs:
+            return waiting(
+                "请上传收入、负债等贷款材料（PDF、PNG 或 JPEG）；可选择自填试算/演示材料/取消。",
+                ["document_refs"],
+                state.credit_form,
+            )
         warnings = []
         pending_fields = []
         try:
             known = {f.document_id for f in state.extracted_fields}
-            for document_id in state.document_refs:
+            for document_id in [] if self_reported else state.document_refs:
                 if self.document_service is not None:
                     extraction = await self.document_service.extract(state.user_id, document_id)
                     if document_id not in known:
@@ -57,7 +75,9 @@ class CreditAssessmentAgent:
             )
         filler = CreditFormFiller()
         try:
-            form = await filler.prefill(state.extracted_fields, state.message, state.credit_form)
+            form = await filler.prefill(
+                [] if self_reported else state.extracted_fields, state.message, state.credit_form
+            )
         except (ValidationError, ValueError) as exc:
             return waiting(
                 "部分提取值格式无效，请核对并提供结构化修正。",
@@ -65,7 +85,8 @@ class CreditAssessmentAgent:
                 state.credit_form,
                 warnings=[str(exc)],
             )
-        form.document_ids = list(dict.fromkeys(form.document_ids + state.document_refs))
+        if not self_reported:
+            form.document_ids = list(dict.fromkeys(form.document_ids + state.document_refs))
         # Only the workflow's validated consent reference can authorize the service call.
         form.consent_ref = state.consent_ref
         state.credit_form = form
@@ -105,10 +126,14 @@ class CreditAssessmentAgent:
             for name in ("employment_months", "assets_total", "liabilities_total")
             if getattr(form, name) is not None
         ]
+        if self_reported:
+            required_confirmation.append("intake_mode")
         unconfirmed = [name for name in required_confirmation if name not in form.confirmed_fields]
         if unconfirmed:
             return waiting(
-                "请核对并确认所有字段，OCR 金额未经确认不能进入风控。",
+                "请核对并确认自填模式与所有字段后再试算。"
+                if self_reported
+                else "请核对并确认所有字段，OCR 金额未经确认不能进入风控。",
                 ["confirmed_fields"],
                 form,
                 warnings=warnings + ["待确认：" + "、".join(unconfirmed)],
@@ -138,10 +163,16 @@ class CreditAssessmentAgent:
             return AgentResult(
                 agent_type="credit_assessment",
                 status=report.status,
-                data_mode=report.data_mode,
-                summary="征信工具未返回可用结果。",
-                structured_facts={"form": form.model_dump(mode="json")},
-                warnings=report.warnings + ([report.error.message] if report.error else []),
+                data_mode=DataMode.MOCK if self_reported else report.data_mode,
+                summary=describe("征信工具未返回可用结果。"),
+                structured_facts={
+                    "form": form.model_dump(mode="json"),
+                    "intake_mode": intake_mode,
+                    "data_provenance": provenance,
+                },
+                warnings=mode_warnings
+                + report.warnings
+                + ([report.error.message] if report.error else []),
             )
         result = await self.mcp.call(
             "credit.evaluate_mock",
@@ -161,7 +192,7 @@ class CreditAssessmentAgent:
                 quote=f.quote,
                 retrieved_at=datetime.now(timezone.utc),
             )
-            for f in state.extracted_fields
+            for f in ([] if self_reported else state.extracted_fields)
             if f.document_id
         ]
         if result.status == ResultStatus.SUCCESS:
@@ -191,19 +222,22 @@ class CreditAssessmentAgent:
         return AgentResult(
             agent_type="credit_assessment",
             status=result.status,
-            data_mode=result.data_mode,
-            summary=summary,
+            data_mode=DataMode.MOCK if self_reported else result.data_mode,
+            summary=describe(summary),
             next_action=next_action,
             structured_facts={
                 "form": form.model_dump(mode="json"),
                 "mock_credit_report": report.data,
                 "assessment": result.data,
+                "intake_mode": intake_mode,
+                "data_provenance": provenance,
             },
             calculations=result.data or {},
             evidence=result.evidence + document_evidence,
             warnings=list(
                 dict.fromkeys(
-                    warnings
+                    mode_warnings
+                    + warnings
                     + report.warnings
                     + result.warnings
                     + ([result.error.message] if result.error else [])

@@ -149,6 +149,7 @@ class ClaimIntakeAgent:
                 status=history.status,
                 data_mode=history.data_mode,
                 summary="未找到当前用户对应的有效保单记录。",
+                next_action="上传单据不等于历史保单已入库。请核对保单号、版本和所属用户；个人演示可先点击导入演示资料，使用其中的模拟保单重新申请。",
                 structured_facts={"form": form.model_dump(mode="json")},
                 warnings=history.warnings + ([history.error.message] if history.error else []),
             )

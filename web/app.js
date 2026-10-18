@@ -10,10 +10,10 @@
   let historyOffset=0,historyCount=0,pendingRequest=null,requestProcessing=false,requestStale=false;
   const TITLES = {investment:"投资咨询",claim:"理赔申请",loan:"贷款申请",policy_tax:"政策 / 税务",other:"其他"};
   const DESCRIPTIONS = {
-    auto:"由服务端根据自然语言识别五类业务；涉及多类业务时会先追问处理顺序。自动识别是入口模式。",
-    investment:"先确认投资画像，再查询公开基金日频净值。请输入六位基金 / ETF 基金代码；当前不提供实时行情。",
+    auto:"可以直接描述问题，也可以先选择一项业务。涉及多项需求时，会先确认办理顺序。",
+    investment:"先确认投资画像，再查询公开基金日频净值。请输入六位基金 / ETF 基金代码；演示可使用 510300，此代码仅用于演示，不构成推荐。当前不提供实时行情。",
     claim:"先上传保单和出险材料，确认提取字段后查询当前用户的历史保单与条款版本。",
-    loan:"支持多份材料；核对收入、负债和贷款要求后，另行授权本次模拟征信与风控评估。",
+    loan:"可上传多份材料核对；没有材料时，可在表单选择“自填试算（未经材料核验）”。两种方式均须逐项确认，再另行授权模拟评估，结果不代表真实审批。",
     policy_tax:"确认地域和税年。年度试算使用居民综合所得收入额；扣除合计不包含 60000 元基本减除费用。",
     other:"此入口用于其他问题；超出金融业务范围时系统会明确说明。"
   };
@@ -27,7 +27,7 @@
       ["liquidity_need","流动资金需求","money","不能超过可投资金额"],
       ["liabilities","负债合计","money","无负债须明确填写 0"],
       ["existing_assets","现有资产","list","逗号或换行分隔；无资产填写“无”"],
-      ["instrument_ids","基金 / ETF 基金代码","list","六位代码，逗号或换行分隔"]
+      ["instrument_ids","基金 / ETF 基金代码","list","六位数字，逗号或换行分隔；演示代码 510300，仅供演示，不构成推荐"]
     ],
     claim:[
       ["policy_id","保单号","text","请与保单原文核对"],
@@ -40,6 +40,7 @@
       ["incident_date","出险日期","date","年-月-日"]
     ],
     loan:[
+      ["intake_mode","资料来源","select","有材料可上传核对；无材料可选自填试算。自填数据未经材料核验，结果不代表真实审批；需确认此项并另行授权。",[["documents","上传材料核对"],["self_reported","自填试算（未经材料核验）"]]],
       ["subject_ref","申请人参考编号","text","仅作为当前模拟主体编号"],
       ["requested_amount","申请贷款金额","money","元 / CNY"],
       ["loan_term_months","贷款期限（月）","integer","至少 1 个月"],
@@ -64,10 +65,11 @@
   const STATUS_LABELS = {waiting_user:"等待补充",waiting:"等待补充",needs_input:"等待补充",completed:"已完成",success:"已完成",partial:"部分结果",failed:"失败",cancelled:"已取消",unavailable:"不可用",running:"运行中",received:"已接收",routed:"已路由",validating:"校验中",formatting:"整理结果中"};
   const state = {session:null,run:null,intent:null,entryMode:"auto",documents:[],extractions:new Map(),consentRef:null,busy:false,conflict:false,controls:new Map()};
   const canResume = () => Boolean(state.run && ["waiting_user","waiting","needs_input"].includes(state.run.status));
-  const canCopyLoan = () => state.intent==="loan" && ["completed","partial","failed","cancelled"].includes(state.run?.status);
+  const canCopyRun = () => ["investment","claim","loan","policy_tax"].includes(state.intent) && ["completed","partial","failed","cancelled"].includes(state.run?.status);
   const textValue = (value) => value == null ? "—" : typeof value === "string" ? value : JSON.stringify(value,null,2);
   const fieldName = (name) => String(name).split(".").at(-1);
-  const labelFor = (name) => LABELS[fieldName(name)] || ({document_refs:"上传材料",confirmed_fields:"字段确认",consent_ref:"征信授权"}[fieldName(name)]) || String(name);
+  const labelFor = (name) => state.run?.field_hints?.[fieldName(name)]?.label || LABELS[fieldName(name)] || ({document_refs:"上传材料",confirmed_fields:"字段确认",consent_ref:"征信授权"}[fieldName(name)]) || String(name);
+  const readableMessage = (message) => String(message).replace(/\b[a-z]+(?:_[a-z]+)+\b/g,(key)=>LABELS[key] || key);
   function node(tag,text,className) {
     const el=document.createElement(tag);
     if(text !== undefined) el.textContent=String(text);
@@ -85,27 +87,51 @@
     } catch { notice("浏览器未允许 sessionStorage；刷新后请手动恢复会话。","warning"); }
   }
   function selectedDocuments() { return state.documents.filter((item) => item.selected).map((item) => item.document_id); }
+  function syncWorkflowView() {
+    const view=FinanceWorkflowView.describeWorkflow(state.run,{pending:Boolean(pendingRequest),busy:state.busy});
+    document.querySelectorAll(".progress li").forEach((item)=>{
+      const step=Number(item.dataset.step);
+      item.classList.toggle("done",step<view.step);
+      if(step===view.step)item.setAttribute("aria-current","step");else item.removeAttribute("aria-current");
+    });
+    $("workflow-title").textContent=view.title;$("workflow-help").textContent=view.help;
+    const intent=state.intent || state.entryMode;
+    document.querySelectorAll("[data-guide-intent]").forEach(item=>item.classList.toggle("active",item.dataset.guideIntent===intent));
+    $("request-attention").hidden=!view.needsRecovery || state.busy;
+    $("run-toolbar").hidden=!state.run;
+    $("continue-documents").hidden=!(canResume() && view.needsDocuments && selectedDocuments().length);
+    $("continue-documents").disabled=state.busy || Boolean(pendingRequest) || state.conflict;
+    const assessment=canResume() && state.intent==="loan" && state.run?.wait_reason==="consent" && Boolean(state.consentRef);
+    $("continue-assessment").hidden=!assessment;$("consent-next").hidden=!assessment;
+    $("continue-assessment").disabled=state.busy || Boolean(pendingRequest) || state.conflict;
+    $("welcome").hidden=Boolean(state.run);
+  }
   function syncControls() {
     document.querySelectorAll("button").forEach((button) => { button.disabled=state.busy; });
     document.querySelectorAll(".intent").forEach((button) => {button.disabled=state.busy || canResume();});
     const active=Boolean(state.session?.token);
-    ["upload-button","create-demo","send-query","restore-run"].forEach((id) => {$(id).disabled=state.busy || !active;});
+    $("restore-run").disabled=state.busy || !active;
     $("refresh-run").disabled=state.busy || !active || !state.run;
-    $("copy-loan").hidden=!canCopyLoan();
-    $("copy-loan").disabled=state.busy || !active || !canCopyLoan();
+    $("copy-loan").hidden=!canCopyRun();
+    $("copy-loan").disabled=state.busy || !active || !canCopyRun();
+    $("copy-loan").textContent=state.intent==="loan" ? "复制为新申请" : state.intent==="policy_tax" ? "复制为新试算" : "复制为新业务";
+    $("cancel-run").hidden=!canResume();
+    $("cancel-run").disabled=state.busy || !active || !canResume() || Boolean(pendingRequest);
     $("read-parent-run").hidden=!state.run?.parent_run_id;
     $("read-parent-run").disabled=state.busy || !active;
     $("confirm-resume").disabled=state.busy || !active || !canResume() || state.conflict;
-    $("grant-consent").disabled=state.busy || !active || !canResume() || Boolean(state.consentRef) || state.conflict;
+    $("confirm-resume").hidden=state.run?.wait_reason==="consent";
+    $("grant-consent").disabled=state.busy || !active || !canResume() || Boolean(state.consentRef) || state.conflict || Boolean(pendingRequest);
     $("revoke-consent").disabled=state.busy || !state.consentRef;
-    $("send-query").textContent=state.busy ? "请求处理中…" : canResume() ? "发送补答并继续" : "发起业务";
-    $("new-business").hidden=!state.run;
+    $("send-query").textContent=state.busy ? "处理中…" : canResume() ? "发送补答" : "发送";
+    $("new-business").disabled=state.busy || Boolean(pendingRequest);
     $("attachment-summary").textContent=selectedDocuments().length ? `附加 ${selectedDocuments().length} 份资料` : "未附加资料";
     $("session-id").textContent=state.session?.session_id || "尚未建立";
     $("user-id").textContent=state.session?.user_id || "—";
     $("restore-session-id").value=state.session?.session_id || "";
     $("consent-status").textContent=state.consentRef ? "已明确授权本次模拟评估" : "尚未授权";
     $("revoke-consent").hidden=!state.consentRef;
+    $("grant-consent").hidden=Boolean(state.consentRef) || !canResume();
     ["history-refresh","locate-request"].forEach(id=>{$(id).disabled=state.busy || !active;});
     $("history-prev").disabled=state.busy || !active || historyOffset===0;
     $("history-next").disabled=state.busy || !active || historyCount<HISTORY_LIMIT;
@@ -115,6 +141,7 @@
     $("interrupt-request").disabled=state.busy || !active || !requestStale;
     $("release-pending-request").disabled=state.busy || !active || !pendingRequest || missingPendingId!==pendingRequest.request_id || $("request-id-input").value.trim()!==missingPendingId;
     ["send-query","confirm-resume","copy-loan"].forEach(id=>{if(pendingRequest) $(id).disabled=true;});
+    syncWorkflowView();
   }
   class ApiError extends Error { constructor(message,status,detail) {super(message);this.status=status;this.detail=detail;} }
   async function api(path,{method="GET",body,privateRequest=true}={}) {
@@ -141,6 +168,12 @@
     }
     return data;
   }
+  async function ensureSession() {
+    if(state.session?.token)return;
+    const session=await api("/api/v1/sessions",{method:"POST",privateRequest:false});
+    if(!session.session_id || !session.token)throw new Error("会话接口未返回完整凭据。");
+    state.session=session;persist();syncControls();
+  }
   async function action(task) {
     if(state.busy) return;
     state.busy=true;notice("");syncControls();
@@ -158,7 +191,7 @@
     const log=$("chat-log");
     if(log.querySelector(".empty")) log.replaceChildren();
     const item=node("p",undefined,`chat-message ${role}`);
-    item.append(node("span",role==="user" ? "你" : "工作流", "chat-role"),node("span",message));
+    item.append(node("span",role==="user" ? "你" : "助手", "chat-role"),node("span",message));
     log.append(item);log.scrollTop=log.scrollHeight;
   }
   function selectEntryMode(mode) {
@@ -168,7 +201,7 @@
       button.classList.toggle("active",button.dataset.intent===mode);
       button.setAttribute("aria-pressed",String(button.dataset.intent===mode));
     });
-    $("intent-description").textContent=DESCRIPTIONS[mode];persist();
+    $("intent-description").textContent=DESCRIPTIONS[mode];persist();syncWorkflowView();
   }
   function clearRun() {
     $("event-list").replaceChildren(node("li","请选择运行后读取事件","empty"));
@@ -187,7 +220,7 @@
     sessionStorage.removeItem(REQUEST_KEY);$("pending-request-id").textContent="";$("request-id-input").value="";$("request-status").textContent="";
     $("history-list").replaceChildren(node("li","点击刷新读取本用户历史","empty"));$("event-list").replaceChildren();
     state.session=null;state.documents=[];state.extractions.clear();clearRun();
-    $("restore-token").value="";$("chat-log").replaceChildren(node("p","建立会话后，可发起一条业务流程。","empty"));
+    $("restore-token").value="";$("chat-log").replaceChildren(node("p","从一句话开始，描述你想解决的问题。","empty"));
     renderDocuments();renderExtractions();persist();syncControls();
   }
   function addDocuments(documents,{selected=true}={}) {
@@ -204,12 +237,11 @@
     if(!state.documents.length) list.append(node("li","暂无资料","empty"));
     for(const doc of state.documents) {
       const li=node("li");li.append(node("div",doc.filename || doc.original_filename || doc.document_id,"document-name"));
-      li.append(node("div",doc.document_id,"help"));
-      if(doc.data_mode) li.append(node("span",doc.data_mode,`pill ${doc.data_mode}`));
+      if(doc.data_mode) li.append(node("span",({mock:"模拟资料",real:"真实来源",redacted:"脱敏资料"}[doc.data_mode]) || doc.data_mode,`pill ${doc.data_mode}`));
       const actions=node("div",undefined,"document-actions");
       const label=node("label"),checkbox=node("input");checkbox.type="checkbox";checkbox.checked=doc.selected;
       checkbox.addEventListener("change",()=>{doc.selected=checkbox.checked;syncControls();});label.append(checkbox,node("span","附加到业务"));
-      const button=node("button","查看提取");button.type="button";button.addEventListener("click",()=>action(()=>loadExtraction(doc.document_id)));
+      const button=node("button","查看提取");button.type="button";button.addEventListener("click",()=>action(async()=>{await loadExtraction(doc.document_id);$("extraction-panel").open=true;}));
       actions.append(label,button);li.append(actions);list.append(li);
     }
     syncControls();
@@ -227,6 +259,16 @@
     state.documents=documents.map(doc=>({...doc,selected:true}));
     state.extractions=new Map(ids.map((id,index)=>[id,extractions[index]]));
     renderDocuments();renderExtractions();
+  }
+  async function showRunEvidence(response) {
+    const ids=(response.document_ids || []).filter(id=>!state.extractions.has(id));
+    if(!ids.length)return;
+    try {
+      const extractions=await Promise.all(ids.map(id=>api(`/api/v1/documents/${encodeURIComponent(id)}/extraction`)));
+      ids.forEach((id,index)=>state.extractions.set(id,extractions[index]));renderExtractions();
+    } catch(error) {
+      notice(`业务状态已保存，但材料证据尚未完整读取。请使用“查看提取”核对后再确认字段。\n${error.message}`,"warning");
+    }
   }
   function renderExtractions() {
     $("extraction-panel").hidden=!state.extractions.size;
@@ -269,8 +311,13 @@
     if(type==="list") return Array.isArray(value) ? value.length ? value.join(", ") : "无" : String(value);
     return String(value);
   }
-  function createField(spec,value,pending,confirmed) {
-    const [name,label,type,help,options]=spec;
+  function createField(spec,value,pending,confirmed,hint={}) {
+    const [name,defaultLabel,type,defaultHelp,options]=spec;
+    const label=typeof hint.label==="string" && hint.label ? hint.label : defaultLabel;
+    // The browser still builds typed values. Server examples describe the API;
+    // they are never inserted as financial inputs or rendered as raw JSON help.
+    const specificHelp=type!=="list" && typeof hint.help==="string" && hint.help && !hint.help.startsWith("请核对后确认；示例不会自动填入");
+    const help=specificHelp ? `${defaultHelp.startsWith("可选") && !hint.help.includes("可选") ? "可选；" : ""}${hint.help}` : defaultHelp;
     const wrapper=node("div",undefined,`field${pending ? " missing" : ""}`);
     const id=`field-${name}`,labelNode=node("label",label);labelNode.htmlFor=id;wrapper.append(labelNode);
     const input=node(type==="select" ? "select" : "input");input.id=id;input.name=name;
@@ -307,7 +354,7 @@
     for(const [name,field] of state.controls) {
       const value=field.input.value.trim();
       if(!value) {if(field.checkbox.checked) throw new Error(`“${field.label}”为空，不能确认。`);continue;}
-      if(!field.checkbox.checked) throw new Error(`请先核对并勾选“${field.label}”，或清空此可选字段。`);
+      if(!field.checkbox.checked) throw new Error(`请先核对并勾选“${field.label}”。`);
       if(field.type==="money") {
         if(!/^\d+(?:\.\d{1,2})?$/.test(value)) throw new Error(`“${field.label}”请填写非负金额，最多两位小数，不含千位分隔符。`);
         values[name]={amount:value,currency:"CNY"};
@@ -336,21 +383,24 @@
   }
   function renderForm(response) {
     const {values,intent}=unwrapForm(response);state.intent=intent;
-    const schema=SCHEMAS[intent] || [];
+    const uploadWait=response.wait_reason==="upload_documents";
+    const schema=uploadWait ? (intent==="loan" ? SCHEMAS.loan.filter(spec=>spec[0]==="intake_mode") : []) : SCHEMAS[intent] || [];
     const pending=(response.pending_fields || []).map(fieldName);
-    const panel=$("form-panel");panel.hidden=Boolean(response.result);
+    const panel=$("form-panel");panel.hidden=Boolean(response.result) || response.status==="cancelled" || !schema.length;
     $("form-title").textContent=intent ? `${TITLES[intent]} · 字段确认` : "澄清业务意图";
-    $("run-question").textContent=response.question || "请补答或核对表单字段后继续。";
+    $("run-question").textContent=readableMessage(response.question || "请补答或核对表单字段后继续。");
     $("pending-fields").textContent=pending.length ? `待补充 / 确认：${response.pending_fields.map(labelFor).join("、")}` : "请核对所有已填写字段。";
     $("pending-fields").hidden=!pending.length && !schema.length;
     $("form-instructions").hidden=!schema.length;
     renderConflicts(response.conflicts);
     const fields=$("business-fields");fields.replaceChildren();state.controls.clear();
-    for(const spec of schema) fields.append(createField(spec,values[spec[0]],pending.includes(spec[0]),(values.confirmed_fields || []).includes(spec[0])));
-    $("consent-panel").hidden=intent!=="loan";
+    for(const spec of schema) fields.append(createField(spec,values[spec[0]],pending.includes(spec[0]),(values.confirmed_fields || []).includes(spec[0]),response.field_hints?.[spec[0]] || {}));
     state.consentRef=values.consent_ref || null;
+    $("consent-panel").hidden=intent!=="loan" || !(response.wait_reason==="consent" || state.consentRef);
     $("raw-response").textContent=JSON.stringify(response,null,2);
     $("business-form").hidden=!schema.length;
+    $("field-review").open=response.wait_reason!=="consent";
+    $("field-review-summary").hidden=response.wait_reason!=="consent";
     confirmationSummary();
   }
   // Shift a decimal string two places for percentage display; no float conversion or recalculation.
@@ -439,7 +489,10 @@
   function applyRun(response,{chat=true}={}) {
     if(!response?.run_id) throw new Error("服务端未返回运行 ID，请检查接口契约。");
     $("event-list").replaceChildren(node("li","点击读取当前运行事件","empty"));
+    const previousWait=state.run?.wait_reason;
     state.run=response;state.conflict=false;
+    if(response.wait_reason==="upload_documents" && previousWait!=="upload_documents")$("materials-panel").open=true;
+    if(previousWait==="upload_documents" && response.wait_reason!=="upload_documents")$("materials-panel").open=false;
     $("run-id").textContent=response.run_id;$("restore-run-id").value=response.run_id;
     $("run-version").textContent=String(response.state_version);
     $("run-status").textContent=STATUS_LABELS[response.status] || response.status;
@@ -447,8 +500,9 @@
     $("run-parent-id").textContent=response.parent_run_id || "—";
     $("run-lineage").hidden=!response.parent_run_id;
     renderForm(response);renderResult(response.result);
+    $("lineage-description").textContent=state.intent==="loan" ? "本申请复制自原运行。原结果与授权记录保留；本申请须重新确认、重新授权。" : "本业务复制自原运行，保留已有字段和材料。原结果保留；请重新逐项核对并确认。";
     $("run-intent").textContent=TITLES[state.intent] || "待澄清";
-    if(chat && (response.question || response.result?.conclusion)) appendChat("assistant",response.question || response.result.conclusion);
+    if(chat && (response.question || response.result?.conclusion)) appendChat("assistant",readableMessage(response.question || response.result.conclusion));
     persist();syncControls();
   }
   async function refreshRun(id=state.run?.run_id) {
@@ -456,14 +510,14 @@
     const response=await api(`/api/v1/runs/${encodeURIComponent(id)}`);
     // Fetch all target references before switching the run. A failed restoration
     // must leave the current run and its attachments together.
-    await restoreRunDocuments(response);applyRun(response,{chat:false});
+    await restoreRunDocuments(response);selectEntryMode(response.intent || "auto");applyRun(response,{chat:false});
     notice("已读取最新运行版本和资料；请核对后继续。");
   }
   async function resume({message,confirmedFields={}}) {
     if(!state.run)throw new Error("请先发起业务。");
     if(state.conflict)throw new Error("请先刷新运行版本。");
     const response=await mutation(`/api/v1/runs/${encodeURIComponent(state.run.run_id)}/resume`,"resume",{state_version:state.run.state_version,message,confirmed_fields:confirmedFields,attachment_ids:selectedDocuments(),consent_ref:state.consentRef});
-    applyRun(response);
+    applyRun(response);await showRunEvidence(response);
   }
   function savePending(request) {
     missingPendingId=null;
@@ -474,6 +528,7 @@
       $("request-id-input").value=request.request_id;
     } else sessionStorage.removeItem(REQUEST_KEY);
     $("pending-request-id").textContent=request ? request.request_id : "";
+    syncWorkflowView();
   }
   async function mutation(path,operation,body) {
     if(pendingRequest) throw new Error("存在处理结果未知的请求，请先定位请求；不会自动重复提交。");
@@ -493,7 +548,11 @@
     if(!runs.length)list.append(node("li","本页暂无历史运行","empty"));
     for(const run of runs) {
       const item=node("li");item.append(node("div",`${TITLES[run.intent] || "待澄清"} · ${STATUS_LABELS[run.status] || run.status}`),node("div",run.run_id,"help"));
-      const button=node("button","读取此运行");button.type="button";button.addEventListener("click",()=>action(()=>refreshRun(run.run_id)));item.append(button);list.append(item);
+      const button=node("button","读取此运行");button.type="button";button.addEventListener("click",()=>action(async()=>{
+        await refreshRun(run.run_id);$("chat-log").replaceChildren();
+        if(state.run.question || state.run.result?.conclusion)appendChat("assistant",readableMessage(state.run.question || state.run.result.conclusion));
+        $("tools-drawer").close();
+      }));item.append(button);list.append(item);
     }
     $("history-page").textContent=`第 ${historyOffset/HISTORY_LIMIT+1} 页`;
   }
@@ -570,9 +629,10 @@
       $("health-dot").className="status-dot ready";
       const mode=health.model_mode || health.llm_mode || (health.model_configured===false ? "rule_fallback" : health.model_configured===true ? "deepseek_configured" : null);
       const modeLabel=mode && /rule|fallback|unconfigured/i.test(mode) ? "规则模式（DeepSeek 未配置或不可用）" : mode==="deepseek_configured" ? "DeepSeek 已配置" : mode;
-      $("health-label").textContent=`服务可响应 · ${modeLabel || health.stage || health.status}`;
+      $("health-label").textContent=mode && /rule|fallback|unconfigured/i.test(mode) ? "规则模式" : "服务已连接";
       const target=$("service-details");target.replaceChildren();
       for(const [key,value] of Object.entries(health)) target.append(node("div",`${key}：${textValue(value)}`));
+      if(modeLabel)target.prepend(node("p",modeLabel));
       if(mode && /rule|fallback|unconfigured/i.test(mode)) target.append(node("p","DeepSeek 未配置或不可用，当前由规则处理。"));
     } catch(error) {
       $("health-dot").className="status-dot error";$("health-label").textContent="服务连接失败";
@@ -592,6 +652,7 @@
   $("forget-session").addEventListener("click",()=>{if(state.busy)return;clearSession();notice("已清除此标签页的会话凭据。服务端资料未删除。");});
   $("upload-form").addEventListener("submit",(event)=>{event.preventDefault();action(async()=>{
     const files=Array.from($("files").files);if(!files.length)throw new Error("请选择要上传的文件。");
+    await ensureSession();
     let success=0;const issues=[];
     for(const file of files) {
       const form=new FormData();form.append("file",file);
@@ -604,17 +665,19 @@
     $("files").value="";notice(`已上传 ${success} / ${files.length} 份材料。${issues.length ? "\n"+issues.join("\n") : "请核对提取证据，再在表单中确认。"}`,issues.length ? "warning" : "info");
   });});
   $("create-demo").addEventListener("click",()=>action(async()=>{
+    await ensureSession();
     const data=await api("/api/v1/demo",{method:"POST"});
     addDocuments(data.documents || [],{selected:false});
     $("demo-result").textContent=`${data.note || "已创建合成演示样本"}\n${textValue(data.policies || [])}`;
     notice("演示样本已创建。请显式勾选要附加的资料，查看提取，再发起业务；未自动提交或授权。");
   }));
   document.querySelectorAll(".intent").forEach((button)=>button.addEventListener("click",()=>{
-    if(canResume()) {notice("当前运行正在等待补充。要切换业务，请点击“结束当前编辑，发起另一条业务”。","warning");return;}
+    if(canResume()) {notice("当前运行正在等待补充。要切换业务，请点击“新对话”；旧运行仍可从历史恢复。","warning");return;}
     selectEntryMode(button.dataset.intent);
   }));
   $("query-form").addEventListener("submit",(event)=>{event.preventDefault();action(async()=>{
     const message=$("message").value.trim();if(!message)throw new Error("请填写业务说明或补答。");
+    await ensureSession();
     appendChat("user",message);
     if(canResume()) {
       // Form-bearing waits must use the explicit confirmation action. A chat reply cannot bypass it.
@@ -624,7 +687,7 @@
       const body={session_id:state.session.session_id,message,attachment_ids:selectedDocuments()};
       if(state.entryMode!=="auto") body.intent_hint=state.entryMode;
       const response=await mutation("/api/v1/queries","query",body);
-      applyRun(response);
+      applyRun(response);await showRunEvidence(response);
     }
     $("message").value="";
   });});
@@ -638,7 +701,7 @@
     if(!state.run || state.intent!=="loan")throw new Error("仅贷款运行可授予此授权。");
     const data=await api(`/api/v1/runs/${encodeURIComponent(state.run.run_id)}/consent`,{method:"POST",body:{granted:true}});
     if(!data.granted || !data.consent_ref)throw new Error("服务端未确认授权。");
-    state.consentRef=data.consent_ref;notice("已明确授权本次模拟评估。请点击“提交已确认字段并继续”执行评估；授权按钮本身不会执行业务。");
+    state.consentRef=data.consent_ref;notice("已明确授权本次模拟评估。请点击“开始模拟评估”继续；授权操作本身不会执行业务。");
   }));
   $("revoke-consent").addEventListener("click",()=>action(async()=>{
     const ref=state.consentRef;if(!ref)throw new Error("当前无有效授权。");
@@ -646,17 +709,43 @@
     notice("已撤销授权。已有结果保留为历史记录；后续模拟评估需要重新授权。");
   }));
   $("refresh-run").addEventListener("click",()=>action(()=>refreshRun()));
+  $("cancel-run").addEventListener("click",()=>action(async()=>{
+    if(!canResume())throw new Error("仅等待补充的运行可在此取消。");
+    const title=TITLES[state.intent] || "业务";
+    const response=await api(`/api/v1/runs/${encodeURIComponent(state.run.run_id)}/cancel`,{method:"POST"});
+    applyRun(response);
+    notice(`已取消当前${title}运行。历史记录保留；${canCopyRun() ? "可复制为新业务或发起另一条业务。" : "可发起另一条业务。"}`);
+  }));
   $("copy-loan").addEventListener("click",()=>action(async()=>{
-    if(!canCopyLoan())throw new Error("仅已结束的贷款运行可复制为新申请。");
+    if(!canCopyRun())throw new Error("仅已结束的投资、理赔、贷款或税务运行可复制。");
+    const intent=state.intent,title=TITLES[intent],target=intent==="loan" ? "新申请" : intent==="policy_tax" ? "新试算" : "新业务";
     const response=await mutation(`/api/v1/runs/${encodeURIComponent(state.run.run_id)}/copy`,"copy",{});
     try {await restoreRunDocuments(response);}
-    catch(error) {throw new Error(`新申请 ${response.run_id} 已创建，但资料恢复失败。当前仍显示原运行；请按新申请 ID 重新读取。\n${error.message}`);}
-    selectEntryMode("loan");applyRun(response);
-    notice("已复制为新申请，原运行和结果保留为历史记录。请重新逐项核对字段，并另行授权本次模拟评估。");
+    catch(error) {throw new Error(`${title}${target} ${response.run_id} 已创建，但资料恢复失败。当前仍显示原运行；请按新运行 ID 重新读取。\n${error.message}`);}
+    selectEntryMode(intent);applyRun(response);
+    notice(intent==="loan" ? "已复制为新申请，原运行和结果保留为历史记录。请重新逐项核对字段，并另行授权本次模拟评估。" : `已将${title}复制为${target}，保留已有字段和材料，原运行和结果保留为历史记录。请重新逐项核对字段后继续。`);
   }));
   $("read-parent-run").addEventListener("click",()=>action(()=>refreshRun(state.run?.parent_run_id)));
   $("restore-run").addEventListener("click",()=>action(()=>refreshRun($("restore-run-id").value.trim())));
-  $("new-business").addEventListener("click",()=>{if(state.busy)return;clearRun();notice("已退出当前编辑；可发起新业务。旧运行可凭运行 ID 恢复。");});
+  $("new-business").addEventListener("click",()=>{
+    if(state.busy || pendingRequest)return;
+    clearRun();$("chat-log").replaceChildren(node("p","从一句话开始，描述你想解决的问题。","empty"));
+    $("message").value="";state.documents.forEach(doc=>{doc.selected=false;});renderDocuments();
+    state.extractions.clear();renderExtractions();
+    $("materials-panel").open=false;$("extraction-panel").open=false;selectEntryMode("auto");notice("");$("message").focus();
+  });
+  function openTools(recovery=false) {
+    if(!$("tools-drawer").open)$("tools-drawer").showModal();
+    if(recovery)$("recovery-tools").open=true;
+  }
+  $("open-tools").addEventListener("click",()=>{openTools();if(state.session?.token)action(loadHistory);});
+  $("close-tools").addEventListener("click",()=>$("tools-drawer").close());
+  $("open-recovery").addEventListener("click",()=>openTools(true));
+  $("continue-documents").addEventListener("click",()=>action(()=>resume({message:"已上传并选择材料，请提取待确认信息。"})));
+  $("continue-assessment").addEventListener("click",()=>action(async()=>{
+    const fields=readConfirmedFields();
+    await resume({message:"已核对字段并授权本次模拟评估。",confirmedFields:fields});
+  }));
   $("health-refresh").addEventListener("click",()=>action(checkHealth));
   try {
     const saved=JSON.parse(sessionStorage.getItem(STORAGE_KEY) || "null");

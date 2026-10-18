@@ -2,7 +2,7 @@
 
 from datetime import date
 from decimal import Decimal
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import Field, StringConstraints
 
@@ -45,6 +45,7 @@ class ClaimForm(Contract):
 class CreditForm(Contract):
     """风控表格的一行。OCR 与提示词可预填，用户确认前不可提交风控。"""
 
+    intake_mode: Literal["documents", "self_reported"] = "documents"
     subject_ref: IdentifierText | None = None
     requested_amount: Money | None = None
     loan_term_months: int | None = Field(default=None, ge=1)

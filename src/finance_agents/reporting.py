@@ -7,6 +7,9 @@ from finance_agents.workflow.state import SessionState
 
 
 FACT_SECTIONS = {
+    "intake_mode",
+    "data_provenance",
+    "metric_coverage",
     "market",
     "as_of",
     "strategy_version",

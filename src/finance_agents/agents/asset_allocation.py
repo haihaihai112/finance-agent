@@ -127,20 +127,22 @@ class AssetAllocationAgent:
             {"instrument_ids": profile.instrument_ids},
             AuthContext(user_id=state.user_id, session_id=state.session_id),
         )
-        if tool.status != ResultStatus.SUCCESS:
+        usable = {ResultStatus.SUCCESS, ResultStatus.PARTIAL}
+        if tool.status not in usable:
             return AgentResult(
                 agent_type="asset_allocation",
                 status=tool.status,
                 data_mode=tool.data_mode,
                 summary="公开基金净值暂不可用，无法给出有行情依据的投资结论。",
                 warnings=tool.warnings + ([tool.error.message] if tool.error else []),
+                next_action="请核对基金代码并更新所需净值后重新查询；也可自行选择有可用数据的代码。",
             )
         metrics = await self.mcp.call(
             "market.compute_metrics",
             {"instrument_ids": profile.instrument_ids},
             AuthContext(user_id=state.user_id, session_id=state.session_id),
         )
-        if metrics.status != ResultStatus.SUCCESS:
+        if metrics.status not in usable:
             return AgentResult(
                 agent_type="asset_allocation",
                 status=metrics.status,
@@ -148,15 +150,42 @@ class AssetAllocationAgent:
                 summary="已取得净值，但历史数据不足以形成可核验收益风险指标。",
                 evidence=tool.evidence,
                 warnings=metrics.warnings + ([metrics.error.message] if metrics.error else []),
+                next_action="请补足至少两条正值净值记录后重新查询，或自行选择历史数据充足的代码。",
+            )
+        partial = ResultStatus.PARTIAL in {tool.status, metrics.status}
+        metric_coverage = {
+            key: metrics.data[key]
+            for key in (
+                "requested_instrument_ids",
+                "available_instrument_ids",
+                "missing_instrument_ids",
+                "stale_instrument_ids",
+                "unavailable_instruments",
+            )
+            if key in metrics.data
+        }
+        unavailable = {
+            **tool.data.get("unavailable_instruments", {}),
+            **metrics.data.get("unavailable_instruments", {}),
+        }
+        next_action = None
+        if partial:
+            omitted = "、".join(unavailable)
+            available = "、".join(metrics.data["metrics"])
+            next_action = (
+                f"可更新代码 {omitted} 的净值或补足历史后重试；"
+                f"也可自行选择仅查询已有可核验指标的代码 {available}，重新确认投资画像。"
             )
         return AgentResult(
             agent_type="asset_allocation",
-            status=ResultStatus.SUCCESS,
+            status=ResultStatus.PARTIAL if partial else ResultStatus.SUCCESS,
             data_mode=tool.data_mode,
-            summary="根据已确认画像给出可复算的基金类别配置模板；查询基金仅用于净值参考，不代表该基金适合任一配置类别。",
+            summary=("仅取得部分请求基金的可核验数据。" if partial else "")
+            + "根据已确认画像给出可复算的基金类别配置模板；查询基金仅用于净值参考，不代表该基金适合任一配置类别。",
             structured_facts={
                 "profile": profile.model_dump(mode="json"),
                 "market": tool.data,
+                "metric_coverage": metric_coverage,
                 "as_of": tool.as_of.isoformat() if tool.as_of else None,
                 "strategy_version": "transparent-category-template-v1",
                 "strategy_weights": TEMPLATES[
@@ -168,12 +197,13 @@ class AssetAllocationAgent:
                 "historical_metrics": metrics.data["metrics"],
                 "metric_basis": metrics.data["metric_basis"],
             },
-            evidence=tool.evidence,
-            warnings=tool.warnings
+            evidence=metrics.evidence,
+            warnings=list(dict.fromkeys(tool.warnings + metrics.warnings))
             + [
                 "配置为固定策略模板，未预测收益。",
                 "历史指标仅单位净值变化及已观测最大回撤，不含分红再投资或费用，不等于总收益率。",
                 "负债与现有资产已记录；模板未评估负债利率及穿透持仓风险。",
                 "短于12个月时模板不配置权益类别；流动资金需求优先。",
             ],
+            next_action=next_action,
         )

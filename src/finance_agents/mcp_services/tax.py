@@ -10,6 +10,16 @@ from finance_agents.storage.policy_store import BRACKETS
 from finance_agents.tools.retrieval import EvidenceRetriever
 
 
+def annual_income_type(value):
+    aliases = {
+        "annual_comprehensive_income",
+        "年度综合所得",
+        "居民年度综合所得",
+        "居民综合所得（年度）",
+    }
+    return "resident_comprehensive_annual" if value in aliases else value
+
+
 def calculate_annual_tax(annual_income, annual_deductions, brackets=None, basic_deduction="60000"):
     income, deductions = Decimal(str(annual_income)), Decimal(str(annual_deductions))
     if any(not x.is_finite() or x < 0 for x in (income, deductions)):
@@ -65,12 +75,14 @@ class TaxMCPService:
                     "股息",
                     "印花税",
                     "契税",
+                    "年终奖",
+                    "全年一次性奖金",
                 ]
             ):
                 return failure(
                     ResultStatus.UNAVAILABLE,
                     "POLICY_SCOPE_UNSUPPORTED",
-                    "Verified corpus covers resident annual comprehensive income only",
+                    "首版仅支持中国大陆居民年度综合所得；该问题超出已核验政策范围，请新建受支持的年度综合所得请求。",
                 )
             jurisdiction = arguments["jurisdiction"]
             year = int(arguments["tax_year"])
@@ -104,12 +116,13 @@ class TaxMCPService:
             if (
                 arguments.get("currency") != "CNY"
                 or arguments.get("resident_status") != "resident"
-                or arguments.get("income_type") != "resident_comprehensive_annual"
+                or annual_income_type(arguments.get("income_type"))
+                != "resident_comprehensive_annual"
             ):
                 return failure(
                     ResultStatus.UNAVAILABLE,
                     "UNSUPPORTED_TAX_PROFILE",
-                    "Only CNY resident annual comprehensive income amount supported",
+                    "仅支持人民币、居民个人和年度综合所得（resident_comprehensive_annual）；请复制为新试算，修正并确认字段。",
                 )
             rule_map = {
                 r["source_id"]: json.loads(r["rules_json"]) for r in rows if r["rules_json"]

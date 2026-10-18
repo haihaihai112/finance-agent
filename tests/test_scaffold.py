@@ -67,6 +67,7 @@ def test_resume_missing_run_is_not_completion(client):
 def test_workbench_and_openapi_available(client):
     assert client.get("/").status_code == 200
     assert client.get("/web/app.js").status_code == 200
+    assert client.get("/web/workflow-view.js").status_code == 200
     paths = client.get("/openapi.json").json()["paths"]
     assert "/api/v1/queries" in paths
     assert "/api/v1/runs/{run_id}/resume" in paths

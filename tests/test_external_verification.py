@@ -92,6 +92,50 @@ def test_missing_key_remains_unverified_without_live_request(monkeypatch, capsys
     assert all(row["passed"] for row in report["controlled_fallbacks"].values())
 
 
+def test_verifier_allows_reasoning_and_complete_structured_output(monkeypatch, capsys):
+    """A finite but undersized budget truncated JSON on the actual provider."""
+    verifier = load_verifier()
+    real_client = httpx.AsyncClient
+
+    def respond(request):
+        body = json.loads(request.content)
+        enough_output = body["max_tokens"] >= 512
+        return httpx.Response(
+            200,
+            json={
+                "model": "intended-model",
+                "choices": [
+                    {
+                        "finish_reason": "stop" if enough_output else "length",
+                        "message": {
+                            "reasoning_content": "synthetic reasoning budget fixture",
+                            "content": '{"intent":"loan","confidence":0.95}'
+                            if enough_output
+                            else '{"intent":"loan",',
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 354, "completion_tokens": 200, "total_tokens": 554},
+            },
+        )
+
+    def synthetic_client(**kwargs):
+        kwargs.setdefault("transport", httpx.MockTransport(respond))
+        return real_client(**kwargs)
+
+    monkeypatch.setattr(verifier.httpx, "AsyncClient", synthetic_client)
+    monkeypatch.setattr(
+        verifier.Settings,
+        "from_env",
+        lambda: Settings(deepseek_api_key="synthetic-only", deepseek_model="intended-model"),
+    )
+    monkeypatch.setattr(sys, "argv", ["verify_deepseek.py", "--calls", "1"])
+    assert verifier.main() == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["live_status"] == "verified_configured_model"
+    assert report["live_requests"][0]["intent"] == "loan"
+
+
 @pytest.mark.parametrize("usage", ["malformed", ["total_tokens"], False, {"total_tokens": True}])
 def test_malformed_usage_preserves_content_facts_and_fails_acceptance(monkeypatch, capsys, usage):
     verifier = load_verifier()

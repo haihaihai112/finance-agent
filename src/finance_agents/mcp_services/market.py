@@ -46,21 +46,49 @@ class MarketMCPService:
                 raise ValueError("Invalid date interval")
             rows = self.store.query(instruments, start, end)
             grouped = {i: [r for r in rows if r.instrument_id == i] for i in instruments}
-            if any(
-                not rs or (today - rs[-1].trade_date).days > self.max_age_days
-                for rs in grouped.values()
-            ):
-                return fail(
-                    ResultStatus.UNAVAILABLE,
-                    "NO_FRESH_MARKET_DATA",
-                    "Requested fund lacks verified NAV in the past 30 days",
+            missing = []
+            stale = []
+            unavailable = {}
+            for instrument, rs in grouped.items():
+                if not rs:
+                    missing.append(instrument)
+                    unavailable[instrument] = "NO_MARKET_DATA"
+                elif (today - rs[-1].trade_date).days > self.max_age_days:
+                    stale.append(instrument)
+                    unavailable[instrument] = "STALE_MARKET_DATA"
+                elif len({r.source_id for r in rs}) > 1:
+                    unavailable[instrument] = "AMBIGUOUS_MARKET_SOURCE"
+                elif tool_name == "market.compute_metrics" and (
+                    len(rs) < 2 or any(r.value <= 0 for r in rs)
+                ):
+                    unavailable[instrument] = "INSUFFICIENT_HISTORY"
+            reason_labels = {
+                "NO_MARKET_DATA": "所选日期范围内净值尚未入库",
+                "STALE_MARKET_DATA": f"最新已入库净值超过{self.max_age_days}天，需更新",
+                "AMBIGUOUS_MARKET_SOURCE": "存在多个未完成核对的数据来源",
+                "INSUFFICIENT_HISTORY": "至少需要两条正值净值记录才能计算历史指标",
+            }
+            coverage_warnings = [
+                f"基金代码 {instrument}：{reason_labels[reason]}；未提供该代码的本次查询结果。"
+                for instrument, reason in unavailable.items()
+            ]
+            available = {i: rs for i, rs in grouped.items() if i not in unavailable}
+            if not available:
+                code = (
+                    "NO_FRESH_MARKET_DATA"
+                    if missing or stale
+                    else "AMBIGUOUS_MARKET_SOURCE"
+                    if "AMBIGUOUS_MARKET_SOURCE" in unavailable.values()
+                    else "INSUFFICIENT_HISTORY"
                 )
-            if any(len({r.source_id for r in rs}) > 1 for rs in grouped.values()):
-                return fail(
-                    ResultStatus.UNAVAILABLE,
-                    "AMBIGUOUS_MARKET_SOURCE",
-                    "Multiple sources need explicit reconciliation",
-                )
+                return fail(ResultStatus.UNAVAILABLE, code, "；".join(coverage_warnings))
+            coverage = {
+                "requested_instrument_ids": instruments,
+                "available_instrument_ids": list(available),
+                "missing_instrument_ids": missing,
+                "stale_instrument_ids": stale,
+                "unavailable_instruments": unavailable,
+            }
             evidence = [
                 EvidenceRef(
                     source_id=r.source_id,
@@ -69,23 +97,17 @@ class MarketMCPService:
                     quote=f"{r.trade_date.isoformat()} 单位净值 {r.value} {r.currency}",
                     retrieved_at=r.fetched_at.replace(tzinfo=timezone.utc),
                 )
-                for rs in grouped.values()
+                for rs in available.values()
                 for r in [rs[-1]]
             ]
             as_of = datetime.combine(
-                min(rs[-1].trade_date for rs in grouped.values()),
+                min(rs[-1].trade_date for rs in available.values()),
                 datetime.min.time(),
                 tzinfo=timezone.utc,
             )
             if tool_name == "market.compute_metrics":
                 metrics = {}
-                for instrument, rs in grouped.items():
-                    if len(rs) < 2 or any(r.value <= 0 for r in rs):
-                        return fail(
-                            ResultStatus.UNAVAILABLE,
-                            "INSUFFICIENT_HISTORY",
-                            "At least two positive NAV observations required",
-                        )
+                for instrument, rs in available.items():
                     first, last = rs[0], rs[-1]
                     peak = first.value
                     drawdown = Decimal("0")
@@ -107,16 +129,19 @@ class MarketMCPService:
                 }
             else:
                 data = {
-                    "records": [r.model_dump(mode="json") for r in rows],
+                    "records": [
+                        r.model_dump(mode="json") for r in rows if r.instrument_id in available
+                    ],
                     "frequency": "daily_published_nav",
                 }
             return ToolResult(
-                status=ResultStatus.SUCCESS,
+                status=ResultStatus.PARTIAL if unavailable else ResultStatus.SUCCESS,
                 data_mode=DataMode.REAL,
-                data=data,
+                data={**data, **coverage},
                 evidence=evidence,
                 as_of=as_of,
-                warnings=["日频公开净值，非实时交易报价；公开接口无可用性保证。"],
+                warnings=["日频公开净值，非实时交易报价；公开接口无可用性保证。"]
+                + coverage_warnings,
             )
         except (KeyError, ValueError, TypeError) as exc:
             return fail(ResultStatus.FAILED, "INVALID_ARGUMENT", str(exc))

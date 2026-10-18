@@ -80,7 +80,7 @@ async def resume(run_id: str, body: ResumeRequest, request: Request, auth=Depend
 async def copy_run(
     run_id: str, body: CopyRunRequest, request: Request, auth=Depends(authenticated)
 ):
-    return await service(request).copy_loan(run_id, body, auth[0])
+    return await service(request).copy_run(run_id, body, auth[0])
 
 
 @router.get("/api/v1/requests/{request_id}")

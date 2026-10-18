@@ -79,7 +79,8 @@ async def verify(settings, calls, timeout):
                         ],
                         "response_format": {"type": "json_object"},
                         "stream": False,
-                        "max_tokens": 128,
+                        # Match the application budget: thinking output also consumes tokens.
+                        "max_tokens": 2048,
                     },
                 )
                 item["http_status"] = response.status_code

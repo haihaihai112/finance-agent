@@ -10,6 +10,7 @@ from finance_agents.agents.intent_router import IntentRouterAgent
 from finance_agents.agents.output_optimizer import OutputOptimizerAgent
 from finance_agents.agents.tax_policy import TaxPolicyAgent
 from finance_agents.contracts.profiles import ClaimForm, CreditForm, InvestmentProfile, TaxProfile
+from finance_agents.contracts.form_hints import form_hints
 from finance_agents.contracts.results import Intent, WorkflowResponse
 from finance_agents.llm.deepseek import DeepSeekClient
 from finance_agents.mcp_services.claims import ClaimsMCPService
@@ -97,6 +98,7 @@ class WorkflowService:
             pending_fields=state.pending_fields,
             question=state.last_question,
             form=form_data,
+            field_hints=form_hints(profile[1]) if profile else {},
             conflicts=facts.get("conflicts", {}),
             result=state.final_response,
         )
@@ -198,7 +200,9 @@ class WorkflowService:
             if cached is not None:
                 return WorkflowResponse.model_validate(cached)
             if state.status != RunStatus.WAITING_USER:
-                raise ValueError("运行已结束或取消，不能继续")
+                raise ValueError(
+                    "运行已结束或取消，不能继续。请使用复制为新业务重新核对字段，或新建请求。"
+                )
             if state.state_version != request.state_version:
                 raise ValueError("运行版本冲突，请重新加载")
             updated = state.model_copy(deep=True)
@@ -265,7 +269,7 @@ class WorkflowService:
                 await asyncio.to_thread(self.store.append_event, run_id, "cancelled", {})
             return await asyncio.to_thread(self.response, state)
 
-    async def copy_loan(self, run_id, request, identity):
+    async def copy_run(self, run_id, request, identity):
         async with self.lock(("request", identity["user_id"], request.request_id)):
             parent = await asyncio.to_thread(self.store.get_run, run_id, identity["user_id"])
             payload = "copy:" + run_id + ":" + request.model_dump_json()
@@ -275,8 +279,8 @@ class WorkflowService:
             if cached is not None:
                 return WorkflowResponse.model_validate(cached)
             ended = {RunStatus.COMPLETED, RunStatus.PARTIAL, RunStatus.FAILED, RunStatus.CANCELLED}
-            if parent.intent != Intent.LOAN or parent.status not in ended:
-                raise ValueError("仅可复制已结束的贷款运行")
+            if parent.intent not in FORMS or parent.status not in ended:
+                raise ValueError("仅可复制已结束的金融业务运行")
             await asyncio.to_thread(self.check_documents, parent.user_id, parent.document_refs)
             copied = parent.model_copy(
                 deep=True,
@@ -291,8 +295,9 @@ class WorkflowService:
                     "consent_ref": None,
                     "branch_result": None,
                     "final_response": None,
-                    "last_question": "已复制贷款材料与字段值。请重新核对全部字段并授权本次模拟评估。",
-                    "message": "已复制贷款申请，请核对字段。",
+                    "last_question": "已复制材料与字段值。请重新核对全部字段。"
+                    + ("贷款还需重新授权本次模拟评估。" if parent.intent == Intent.LOAN else ""),
+                    "message": "已复制业务，请重新核对字段。",
                 },
             )
             for name, _ in FORMS.values():

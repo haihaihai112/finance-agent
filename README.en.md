@@ -16,7 +16,9 @@ The implemented scope is mainland China, CNY, published daily fund/ETF net asset
 | Investment profile | Confirm amount, horizon, risk, liquidity needs, liabilities, existing assets, region, and fund codes before producing category allocations and historical NAV metrics |
 | Claim intake | Upload PDF/PNG/JPEG documents, extract and confirm fields, retrieve the current user's policy history and versions, and screen coverage dates and clauses |
 | Loan form | Prefill from multiple documents and user instructions, resolve missing/conflicting values, then require field confirmation and separate consent before creating a strict `CreditModelInput` table row |
-| Loan reassessment | Copy a finished loan into a new application with documents and values retained, confirmation and consent cleared, and a parent-run link; preserve the original result |
+| Self-reported loan estimate | Explicitly select `self_reported`, confirm each field and separately grant consent; results and exports label the input as not document-verified and still use simulated risk rules |
+| Copy and retry | Copy finished investment, claim, loan, and tax runs with documents and values retained, confirmation and consent cleared, and a parent-run link; preserve the original result |
+| Partial market data and hints | Check missing, stale, and insufficient history per instrument and retain usable results; API field hints include formats/examples, and 422 responses omit original inputs |
 | OCR evidence | Read native PDF text first; run RapidOCR ONNX on images and scanned pages without text; retain document, page, quote, coordinates, and confidence |
 | Four MCP services | Market, claims, credit/risk, and tax; SDK `stdio` is the default, with identity, run ownership, and tool checks on both sides |
 | Tax calculation | Retrieve verified official material by region, date, and version; calculate the seven-band resident annual tax using `Decimal` and retain citations |
@@ -29,7 +31,11 @@ OCR never confirms financial fields automatically, and prompts cannot create con
 
 ## Workbench screenshots
 
-These are actual screenshots from local browser verification on 2026-10-13 using synthetic material. The loan view shows simulated screening, principal-only monthly repayment, and a repayment ratio. The tax view shows annual tax and official citations. The current workbench interface is in Chinese.
+The 2026-10-18 interface centers on conversation, shows upload/forms at the relevant stage, and groups history, events, and recovery under **历史与设置** (history and settings). This desktop homepage was saved during that version's local browser verification; see the [UI verification record](docs/minimal-ui-verification-2026-10-18.md). The interface is in Chinese.
+
+![Conversation homepage](docs/screenshots/minimal-20261018/home.jpg)
+
+The following screenshots retain the 2026-10-13 synthetic-material results and citations. Their layout belongs to the historical version.
 
 ![Simulated loan summary and document evidence](docs/screenshots/loan-summary.png)
 
@@ -106,7 +112,7 @@ For the historical Windows/Python 3.13 dependency environment, install `requirem
 | --- | --- |
 | `LLM_ENABLED` | Defaults to `true`; start local demos with `false`. Without a key, routing explicitly falls back to rules |
 | `DEEPSEEK_API_KEY` | Can remain empty; keep credentials only in local `.env` or environment variables |
-| `DEEPSEEK_MODEL` | Defaults to `deepseek-flash`; verify the name and account availability yourself. Real API calls remain unverified |
+| `DEEPSEEK_MODEL` | Defaults to `deepseek-flash`; the original local account passed structured generation, application routing and tax-result formatting on 2026-10-18. Check other accounts independently; see the [dated live-call record](docs/deepseek-live-verification-2026-10-18.md) |
 | `MCP_TRANSPORT` | `stdio` by default; `inprocess` is for direct-call debugging |
 | `DATABASE_URL` | Empty selects `data/runtime/finance.db`; see [MySQL setup](docs/mysql.md) for the optional backend |
 | `FINANCE_DATA_DIR` | Overrides the local runtime data and document directory |
@@ -117,12 +123,14 @@ Do not commit `.env`, runtime databases, uploads, or caches. Back up the databas
 
 ## Demo walkthrough
 
-1. Click **建立新会话** (create session), expand **演示资料** (demo material), and click **创建本会话演示样本** (create samples). This explicitly creates synthetic policy/income PDFs and imports the dated 510300 NAV snapshot. It does not attach the samples automatically, submit a business request, or grant consent.
+1. Sending the first message creates a session. Expand **添加或管理资料 → 使用演示资料** (manage documents → demo material), then click **创建演示资料** (create samples). This explicitly creates synthetic policy/income PDFs and imports the dated 510300 NAV snapshot. It does not attach the samples automatically, submit a business request, or grant consent. **新对话** (new conversation) retains identity and history.
 2. **Investment:** ask for fund planning and confirm mainland China, CNY 100000.00, 12 months, medium risk, liquidity needs of 10000.00, liabilities of 0, no existing assets, and code 510300. Inspect category allocations and NAV dates. An expired snapshot should return unavailable; update it before requesting metrics.
 3. **Claims:** select the demo policy as an attachment; confirm `DEMO-POLICY-001`, `demo-v1`, `hospitalization`, and incident date `2026-10-01`. Read the screening against the current user's historical clauses. An upload does not create a real historical policy automatically.
-4. **Loan:** select the income PDF and check monthly income 8000.00, monthly debt payments 1000.00, and employment status `employed`. Enter applicant reference `demo-applicant`, amount 12000.00, and 12 months. Confirm each field, click **明确授权本次模拟评估** (authorize this simulated assessment), then submit confirmed fields to continue. After completion, choose **复制为新申请** (copy as new application), change the amount to 24000.00 and term to 24 months, and confirm/grant consent again. Read the original run to check that its result is preserved.
+4. **Loan:** select the income PDF and check monthly income 8000.00, monthly debt payments 1000.00, and employment status `employed`. Enter applicant reference `demo-applicant`, amount 12000.00, and 12 months. Alternatively, explicitly select **自填试算（未经材料核验）** (self-reported estimate, not document-verified). Confirm all fields, separately grant consent, then click **开始模拟评估** (start simulated assessment). After completion, copy as a new application, change amount/term, and confirm/grant consent again. The original result remains unchanged.
 5. **Tax:** confirm mainland China, tax year 2026, resident status, annual comprehensive income amount 120000.00, and annual deductions of 0 beyond the 60000 basic deduction. The example annual tax is 3480.00, before prepaid tax; it is not directly a tax balance due or refund.
-6. **Other and history:** submit an out-of-scope question to see the scope response. Refresh run history, read events, and download JSON/Markdown reports for existing results. Reports preserve facts, citations, and limits without exporting internal state, credentials, or consent references.
+6. **Other and history:** submit an out-of-scope question to see the scope response. Open **历史与设置** (history and settings), read runs/events, and download JSON/Markdown reports for existing results. Reports preserve facts, citations, input provenance, and limits without exporting internal state, credentials, or consent references.
+
+All four financial intents can be copied into new runs, and waiting runs can be explicitly cancelled. Multi-code NAV requests may return partial results with per-code reasons. Tax supports explicit annual comprehensive-income synonyms; separate annual-bonus taxation is outside the current calculator. API `field_hints` include formats and examples. See [report-driven revisions](docs/report-revisions-2026-10-18.md).
 
 Refresh and request lookup only read saved state; they do not replay business operations. Each submission saves a request ID. If the response is lost, use request recovery to locate the associated run. A request with no update for more than five minutes can be explicitly interrupted; the server checks eligibility again, revokes consent, and rejects late result overwrites. A completed HTTP request may still belong to a business run waiting for input. See the [workbench guide](docs/workbench-guide.md) for 404/409 handling and detailed steps.
 
@@ -159,9 +167,11 @@ The publication copy also ran `scripts/start.ps1` using PowerShell 7.6.5; the ho
 
 Historical verification includes actual RapidOCR ONNX inference on Chinese PNG/scanned PDF samples, four `stdio` MCP services across processes, local SQLite, public NAV ingestion and reruns, Edge workflows, consent revocation, user isolation, version conflicts, loan copying, request recovery, and report downloads. See the [verification record](docs/verification.md) for evidence.
 
+The 2026-10-18 publication-copy offline check recorded **219 passed, 4 skipped**, with Ruff lint, 84-file format checks, compileall, and 5 workflow-view unit tests passing. It reused the local Python 3.13.9 environment with system-site-packages enabled, not a clean install. Model use was disabled, private configuration was not copied, and external sockets were blocked. Four skips require dedicated MySQL; one warning concerns a TestClient dependency deprecation. Diagnostics correctly blocked occupied port 8000 and exited 0 on port 8873. No paid API or full browser workflow was repeated; see the [dated publication check](docs/PUBLICATION-2026-10-18.md).
+
 Remaining boundaries:
 
-- **External services:** DeepSeek has synthetic transport, validation, and fallback tests; real key-based API calls are unverified. MySQL has an implementation and dedicated test entry points, but real-service end-to-end verification is pending.
+- **External services:** the original project verified real DeepSeek calls and an application tax workflow with synthetic text on 2026-10-18. This publication-copy check does not repeat paid API calls or establish representative accuracy. MySQL has an implementation and dedicated test entry points, but real-service end-to-end verification is pending.
 - **Business:** credit/risk uses deterministic simulation without a real credit bureau or bank model. Claims only screen clauses and do not submit claims or execute payouts. Allocation templates do not perform personalized fund selection.
 - **OCR:** there is no representative financial-document dataset or accuracy result. Handwriting, blur, and complex tables need further work. Images embedded in a PDF page that already has native text are not separately OCRed.
 - **Identity and recovery:** local sessions are a demo identity mechanism, without enterprise SSO. Application idempotency and transactional checkpoints do not establish exactly-once execution across systems. Forced interruption does not automatically replay external tools.
@@ -202,6 +212,7 @@ The detailed project documents below are currently in Chinese.
 | [OCR verification](docs/ocr-verification.md) | Actual inference, field evidence, recognition limits |
 | [Historical verification](docs/verification.md) | Tests, installation, browser checks, unverified items |
 | [Publication notes](docs/PUBLICATION.md) | 2026-10-14 clean install, code checks, startup checks, historical context |
+| [2026-10-18 publication check](docs/PUBLICATION-2026-10-18.md) | Latest offline regression, environment, isolation and dated evidence |
 | [Browser reproduction](docs/browser-verification.md) | Playwright commands and real API versus controlled fixtures |
 | [Resources and external checks](docs/resources-and-external-verification.md) | Concurrency measurement, MySQL, optional model verification |
 | [Acceptance walkthrough](docs/personal-project-acceptance.md) | Business-by-business steps and result checks |

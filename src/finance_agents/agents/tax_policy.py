@@ -15,6 +15,16 @@ class TaxPolicyAgent:
         business_message = "\n".join(
             dict.fromkeys(filter(None, [getattr(state, "initial_message", ""), state.message]))
         )
+        if profile.income_type == "annual_bonus" or any(
+            term in business_message for term in ["年终奖", "全年一次性奖金"]
+        ):
+            return AgentResult(
+                agent_type="tax_policy",
+                status=ResultStatus.UNAVAILABLE,
+                data_mode=DataMode.REAL,
+                summary="首版尚不支持年终奖单独计税，不能用年度综合所得公式代替。",
+                next_action="如需居民年度综合所得试算，请新建请求并提交全年收入额；年终奖单独计税请使用税务机关提供的渠道核算。",
+            )
         calculate = profile.annual_income is not None or any(
             word in business_message for word in ["计算", "试算", "多少", "税额"]
         )
@@ -33,7 +43,7 @@ class TaxPolicyAgent:
                 data_mode=DataMode.REAL,
                 summary="请确认地域与税年；年度税额试算还需居民身份、年度综合所得收入额、人民币币种及60000元基本减除费用之外的年度扣除合计。",
                 missing_fields=missing,
-                next_action="明确 annual 字段为全年金额；扣除无金额时须明确0。",
+                next_action="请在表单确认地域、税年和居民年度综合所得；金额为全年人民币金额，扣除不含60000元基本减除费用，无其他扣除须填0。",
             )
         arguments = {
             "jurisdiction": profile.jurisdiction,
@@ -76,4 +86,7 @@ class TaxPolicyAgent:
             calculations=result.data if calculate and result.data else {},
             evidence=result.evidence,
             warnings=result.warnings + ([result.error.message] if result.error else []),
+            next_action=None
+            if result.status == ResultStatus.SUCCESS
+            else "请检查支持范围与字段格式；已结束的运行可复制为新试算，重新确认后提交。超出范围的问题请新建受支持请求。",
         )

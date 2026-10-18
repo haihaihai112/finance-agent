@@ -3,6 +3,7 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
@@ -35,8 +36,52 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @application.exception_handler(TypeError)
     @application.exception_handler(ValidationError)
+    @application.exception_handler(RequestValidationError)
     async def invalid(request: Request, error):
-        return JSONResponse(status_code=422, content={"detail": str(error)})
+        detail = "请求或表单格式不正确，请按字段示例修正后重新提交；本次未保存修改。"
+        if isinstance(error, (ValidationError, RequestValidationError)):
+            from finance_agents.contracts.form_hints import LABELS, form_hints
+            from finance_agents.contracts.requests import (
+                QueryRequest,
+                ResumeRequest,
+                ConsentRequest,
+                CopyRunRequest,
+            )
+            from finance_agents.workflow.service import FORMS
+
+            model = next(
+                (
+                    model
+                    for _, model in FORMS.values()
+                    if model.__name__ == getattr(error, "title", None)
+                ),
+                None,
+            )
+            known_names = set(LABELS) | {"body", "query", "path", "amount", "currency"}
+            for request_model in (QueryRequest, ResumeRequest, ConsentRequest, CopyRunRequest):
+                known_names.update(request_model.model_fields)
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "detail": detail,
+                    "errors": [
+                        {
+                            "field": ".".join(
+                                str(part)
+                                if isinstance(part, int) or part in known_names
+                                else "unknown"
+                                for part in item["loc"]
+                            ),
+                            "type": item["type"],
+                        }
+                        for item in error.errors()
+                    ],
+                    "field_hints": form_hints(model) if model else {},
+                },
+            )
+        return JSONResponse(
+            status_code=422, content={"detail": detail, "errors": [], "field_hints": {}}
+        )
 
     application.include_router(router)
     web = PROJECT_ROOT / "web"

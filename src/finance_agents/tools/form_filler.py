@@ -45,6 +45,7 @@ class CreditFormFiller:
                 "consent_ref",
                 "form_version",
                 "document_ids",
+                "intake_mode",
             }:
                 grouped[field.name].append(field)
         data = form.model_dump(mode="json")
@@ -100,6 +101,8 @@ class CreditFormFiller:
         if missing:
             raise ValueError("missing fields: " + ", ".join(missing))
         unconfirmed = [n for n in self.required_fields if n not in form.confirmed_fields]
+        if form.intake_mode == "self_reported" and "intake_mode" not in form.confirmed_fields:
+            unconfirmed.append("intake_mode")
         unconfirmed += [
             n
             for n in ("employment_months", "assets_total", "liabilities_total")
